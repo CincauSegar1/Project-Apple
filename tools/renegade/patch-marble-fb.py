@@ -286,6 +286,27 @@ PATCHES = (
      bytes.fromhex('40970c94'),
      bytes.fromhex('25ffff17'),
      '_hfs_swap_HFSPlusBTInternalNode: line 517 panic call replaced with branch to success exit'),
+    # Diagnostic: log the iOS18->legacy swap record that present() sees.
+    # Hooks the first instr of the lmask/id block (ldr w8,[x1,#0x50] at
+    # 0xb47484) and branches to a trampoline that IOLogs lmask + all 4
+    # surface IDs, then re-executes the hooked ldr and returns.
+    (0xb47484,
+     bytes.fromhex('285040b9'),
+     bytes.fromhex('5338e717'),
+     'AppleCLCD::present: branch to swap-record diagnostic trampoline at 0x5155d0'),
+    (0x5155d0,
+     bytes.fromhex('1f2003d5') * 25,
+     bytes.fromhex(
+         'e007baa9e20f01a9e41702a9e61f03a9fe2300f9'
+         '280441b9295440b92a5840b92b5c40b92c6040b9'
+         'e103082ae203092ae3030a2ae4030b2ae5030c2a'
+         '00e4fff000800e914bac1594fe2340f9e61f43a9'
+         'e41742a9e20f41a9e007c6a8285040b996c71814'),
+     'trampoline at 0x5155d0: IOLog lmask + 4 surface ids for present() swap record'),
+    (0x19c3a0,
+     b'\x00' * 44,
+     b'SWEETDBG present lmask=%x ids %u %u %u %u\n\x00',
+     'format string for present() swap-record diagnostic'),
 )
 
 
