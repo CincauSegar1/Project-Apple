@@ -248,4 +248,5 @@ This project (**Project Apple**) is built upon and honors the foundational work 
 * **[ios-sweet](https://github.com/dipa-studio/ios-sweet)**: The pioneer project for running iOS 16 on Redmi Note 10 Pro (`sweet`) and Poco F1 (`beryllium`).
 * **[UniXNU](https://github.com/UniXNU)**: Reference implementation and insights on XNU Darwin bring-up.
 * **Apple Inc.**: Open-source Darwin releases (XNU, IOHIDFamily, libpthread, xnu-11215).
+* **[hakios-metal](https://github.com/oosexgang/hakios-metal)**: A userspace Metal driver that builds Adreno PM4 command streams and exposes an `MTLDevice` plug-in, talking to a kernel GPU service through the Linux `msm` DRM request ABI. We ported it toward the Adreno 725 (SM7475 / POCO F5 "marble") under `gpu/hakios-metal/` — adding an a7xx chip layer and a generation dispatch (`chip.hpp`), the `SweetAdreno630`/`HakiosGPU` service binding, and the `SweetSurfaceBo` import path — so the same Metal driver can drive Project Apple's `SweetAdreno` kernel service.
 * **Open Source Tools**: BearSSL, blacktop/ipsw, OrangeFox Recovery, and Qualcomm Linux mainline contributors.

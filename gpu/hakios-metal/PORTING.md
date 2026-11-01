@@ -15,6 +15,15 @@ Upstream: hakios-metal targets chip `0x06030500`. This chip is `0x43050a00`.
   `ChipInfo` for the emitters. `usable()` gates a7xx off until its register
   table is confirmed.
 - `Gpu::generation()`, `Gpu::info()`, `Gpu::usable()` in `gpu.hpp`.
+- `src/iokit_transport.cpp` — binds the kernel service by trying
+  `SweetAdreno630` (Project Apple / SWEET) then `HakiosGPU` (upstream), so the
+  same driver attaches to either kernel.
+- `src/gpu.cpp` — `surfaceBo()` is dual-ABI: it first asks the SWEET
+  `SweetAdreno630` selector `0x71` (`sweet_gpu_surface_bo`, 128 B, which also
+  reports the GPU iova), then falls back to hakios's `0x7e` (`HakiosSurface`).
+  The rest of the msm ioctl surface (GEM_NEW/INFO/CPU_PREP/SUBMIT/WAIT_FENCE/
+  SUBMITQUEUE/GEM_CLOSE at 0x40-0x4b + 0x09) is already selector-compatible
+  with `sweet_adreno_abi.h`.
 
 ## What is NOT done yet (the real port work)
 
@@ -26,14 +35,21 @@ Upstream: hakios-metal targets chip `0x06030500`. This chip is `0x43050a00`.
    `a7xx::kA7xxRegistersConfirmed = false` and `usable()` refuses a7xx.
 2. **Emitters.** `compute.cpp` and `render.cpp` write a6xx offsets. They need
    an a7xx path (freedreno `a7xx/` in turnip is the reference order).
-3. **Kernel driver.** This is a *userspace* Metal driver. It needs the kernel's
-   `HakiosGPU` IOService (`IOServiceMatching("HakiosGPU")`) which maps the GPU
-   MMIO and feeds a ringbuffer. The SWEET kernel has no such service — a
-   `SweetAdreno` driver must be written for the SM7475 GPU (irq, SMMU/TTBR0,
-   CP ringbuffer, GPMU/AOP power-up). Without it `openKernelGpu` returns
-   nullptr and the plugin never attaches.
-4. **GPU power-up.** SM7475 Adreno 725 needs the GMU/AOP firmware handshake +
-   clock/voltage rail bring-up before the CP responds.
+3. **Kernel driver (the hard part).** This is a *userspace* Metal driver. It
+   needs a kernel GPU service. The SWEET kernel already ships `SweetAdreno630`
+   (`bsd/dev/sweet_a630.c` + `iokit/Kernel/arm/SweetAdreno.cpp`) — but it is
+   written for the **Adreno 630 of the POCO F1 (beryllium)**, a different SoC
+   and a different register/SMMU/GMU layout. To light the Adreno 725 it must be
+   ported to the SM7475 GPU (marble): new MMIO bases, the A7xx GMU/HFI
+   programming, the marble SMMU context, and the clock/DCVS table. Then
+   `sweetgpu=8 sweetgpuuc=1` will publish it (as `AGXDeviceUserClient`, which
+   Metal's sandbox allows). Do NOT enable `sweetgpu=8` on marble now: the A630
+   register poke in the wrong hardware hangs the bus at boot.
+4. **GPU firmware (per-device, not redistributable).** The Adreno 725 needs
+   `a725_gmu.bin`, `a725_sqe.fw` and a signed zap shader pulled from the phone's
+   own Android `/vendor/firmware` (`adb pull`), the same way the A630 flow needs
+   `a630_zap.*`. Without the zap the CP never leaves secure mode and the GPU
+   cannot run.
 
 ## Build / test
 

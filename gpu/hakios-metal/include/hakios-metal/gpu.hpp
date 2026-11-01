@@ -33,6 +33,7 @@ enum Request : uint32_t {
     kSubmitQueueNew = 0x4a,
     kSubmitQueueClose = 0x4b,
     kHakiosSurface = 0x7e,   // hakios's own (hakios.gpu.cpp surfaceBuffer): an IOSurface's memory as a buffer, by the surface's ID
+    kSweetSurfaceBo = 0x71,  // the SWEET kernel's SweetAdreno630 surface BO (sweet_adreno_abi.h): same idea, wider struct
 };
 
 struct MsmTimespec { int64_t seconds, nanoseconds; };
@@ -60,6 +61,21 @@ struct DrmGemClose { uint32_t handle, pad; };
 // FourCC, 'BGRA' and so on) and PLANES
 struct HakiosSurface { uint32_t surface, handle; uint64_t size; uint32_t offset, rowBytes, width, height, pixelFormat, planes; };
 constexpr uint32_t kHakiosDescribe = 0xffffffffu;
+
+// SweetAdreno630's answer to kSweetSurfaceBo (sweet_adreno_abi.h sweet_gpu_surface_bo,
+// ABI minor 2 layout, 128 bytes). Same fields as HakiosSurface plus a GPU iova and
+// per-plane geometry. The first 5 fields map 1:1 onto what surfaceBo() reports.
+struct SweetSurfacePlane { uint32_t offset, stride, width, height; };
+struct SweetSurfaceBo {
+    uint32_t surface_id, handle;
+    uint64_t size, iova;
+    uint32_t offset, rowBytes, width, height, pixelFormat, planes;
+    uint32_t flags, tiling, ubwc, reserved;
+    SweetSurfacePlane plane[3];
+    uint64_t alias_addr, alias_size;
+};
+constexpr uint32_t kSweetDescribeOnly = 0xffffffffu;
+static_assert(sizeof(SweetSurfaceBo) == 128, "sweet_gpu_surface_bo is 128 bytes (ABI minor 2)");
 
 static_assert(sizeof(MsmParam) == 24 && sizeof(MsmGemNew) == 16 && sizeof(MsmGemInfo) == 24, "msm_drm.h layout");
 static_assert(sizeof(MsmSubmitCmd) == 32 && sizeof(MsmSubmitBo) == 16 && sizeof(MsmGemSubmit) == 72, "msm_drm.h layout");
