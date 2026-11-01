@@ -328,6 +328,68 @@ PATCHES = (
      b'\x00' * 48,
      b'SWEETDBG swapin raw 98=%x 9c=%x a0=%x a4=%x\n\x00',
      'format string for SwapEnd raw-input diagnostic'),
+
+    # ---- SweetAdreno bring-up: beryllium A630 -> marble SM7475 (Adreno 662) ----
+    # The kernel's SweetAdreno GPU driver was written for the POCO F1 (beryllium)
+    # and bakes the beryllium MMIO map. Marble (SM7475) places the same blocks at
+    # different bases (marble.dts qcom,kgsl-3d0 / kgsl-smmu / gpucc / gmu / pdc /
+    # cmd-db / gpu_microcode). Patch the movz/movk hi16 immediates and the two
+    # reserved-memory literal entries so the bring-up pokes the right silicon.
+    #   GPU core   0x05000000 -> 0x03d00000
+    #   gpucc      0x05090000 -> 0x03d90000
+    #   qsmmu-v500 0x05040000 -> 0x03da0000
+    #   GMU/RSCC   0x0506a000 -> 0x03d6a000  (kgsl_gmu_reg)
+    #   PDC cfg    0x0b280000 -> 0x0b290000  (kgsl_gmu_pdc_cfg)
+    #   cmd-db     0x85fe0000 -> 0x80860000  (aop_cmd_db_region, literal)
+    #   zap region 0x8c415000 -> 0x8bb1a000  (gpu_microcode_region, literal)
+    # SMMU (qsmmu-v500 @ 0x3da0000): every movz/movk w,#0x504,lsl16 in the GPU code
+    (0x58ec78, bytes.fromhex('88a0a052'), bytes.fromhex('487ba052'),
+     'sweetadreno: SMMU base 0x5040000 -> 0x3da0000 (stage printf)'),
+    (0x58f260, bytes.fromhex('80a0a052'), bytes.fromhex('407ba052'),
+     'sweetadreno: SMMU base 0x5040000 -> 0x3da0000'),
+    (0x59012c, bytes.fromhex('80a0a052'), bytes.fromhex('407ba052'),
+     'sweetadreno: SMMU base 0x5040000 -> 0x3da0000'),
+    (0x590da8, bytes.fromhex('80a0a052'), bytes.fromhex('407ba052'),
+     'sweetadreno: SMMU base 0x5040000 -> 0x3da0000'),
+    (0x5916c8, bytes.fromhex('80a0a052'), bytes.fromhex('407ba052'),
+     'sweetadreno: SMMU base 0x5040000 -> 0x3da0000'),
+    (0x59193c, bytes.fromhex('80a0a052'), bytes.fromhex('407ba052'),
+     'sweetadreno: SMMU base 0x5040000 -> 0x3da0000'),
+    (0x592600, bytes.fromhex('80a0a052'), bytes.fromhex('407ba052'),
+     'sweetadreno: SMMU base 0x5040000 -> 0x3da0000'),
+    (0x592678, bytes.fromhex('80a0a052'), bytes.fromhex('407ba052'),
+     'sweetadreno: SMMU base 0x5040000 -> 0x3da0000'),
+    (0x5945e4, bytes.fromhex('80a0a052'), bytes.fromhex('407ba052'),
+     'sweetadreno: SMMU base 0x5040000 -> 0x3da0000'),
+    (0x594958, bytes.fromhex('80a0a052'), bytes.fromhex('407ba052'),
+     'sweetadreno: SMMU base 0x5040000 -> 0x3da0000'),
+    # gpucc @ 0x3d90000
+    (0x58ec80, bytes.fromhex('28a1a052'), bytes.fromhex('287ba052'),
+     'sweetadreno: GPUCC base 0x5090000 -> 0x3d90000 (stage printf)'),
+    (0x58ecb8, bytes.fromhex('20a1a052'), bytes.fromhex('207ba052'),
+     'sweetadreno: GPUCC base 0x5090000 -> 0x3d90000'),
+    # GPU core @ 0x3d00000 (only the two bring-up loads; 0x5000000 is used
+    # elsewhere for unrelated immediates so do NOT patch the other 31 hits)
+    (0x58ec90, bytes.fromhex('08a0a052'), bytes.fromhex('087aa052'),
+     'sweetadreno: GPU base 0x5000000 -> 0x3d00000 (stage printf)'),
+    (0x594328, bytes.fromhex('00a0a052'), bytes.fromhex('007aa052'),
+     'sweetadreno: GPU base 0x5000000 -> 0x3d00000'),
+    # GMU/RSCC @ 0x3d6a000 (movk hi 0x506 -> 0x3d6; the lo 0xa000 stays)
+    (0x58ec88, bytes.fromhex('c9a0a072'), bytes.fromhex('c97aa072'),
+     'sweetadreno: GMU base 0x506a000 -> 0x3d6a000 (stage printf)'),
+    (0x58f214, bytes.fromhex('c0a0a072'), bytes.fromhex('c07aa072'),
+     'sweetadreno: GMU base 0x506a000 -> 0x3d6a000'),
+    (0x594138, bytes.fromhex('c0a0a072'), bytes.fromhex('c07aa072'),
+     'sweetadreno: GMU base 0x506a000 -> 0x3d6a000'),
+    # PDC cfg @ 0xb290000 (kgsl_gmu_pdc_cfg)
+    (0x5901d8, bytes.fromhex('0065a152'), bytes.fromhex('2065a152'),
+     'sweetadreno: PDC cfg base 0xb280000 -> 0xb290000'),
+    # cmd-db reserved region literal 0x85fe0000 -> 0x80860000 (aop_cmd_db_region)
+    (0x2e1600, (0x85fe0000).to_bytes(8, 'little'), (0x80860000).to_bytes(8, 'little'),
+     'sweetadreno: cmd-db region 0x85fe0000 -> 0x80860000'),
+    # gpu_microcode (zap) reserved region literal 0x8c415000 -> 0x8bb1a000
+    (0x2e16a8, (0x8c415000).to_bytes(8, 'little'), (0x8bb1a000).to_bytes(8, 'little'),
+     'sweetadreno: zap/gpu_microcode region 0x8c415000 -> 0x8bb1a000'),
 )
 
 
