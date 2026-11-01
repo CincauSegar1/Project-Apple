@@ -177,12 +177,12 @@ public:
     int param(uint32_t which, uint64_t* value);
     // the chip id without the speed bin above it: 0x06030500 on the phone, 0 if the driver does not say
     uint32_t chipId();
-    // which Adreno family chipId() is (a6xx / a7xx), kUnknown if the driver says nothing or an unlisted part
+    // which Adreno family chipId() is (a6xx, incl. the A662 of the SM7475), kUnknown if the driver says nothing
     ChipGeneration generation() { return generationOf(chipId()); }
     // the per-generation facts of this chip (ChipInfo); a zero struct for an unknown part
     ChipInfo info() { return infoFor(chipId()); }
-    // whether a command stream may be submitted: true on a6xx, gated on a7xx until its registers are tabulated
-    bool usable() { return hakios::metal::usable(generation()); }
+    // whether a command stream may be submitted: true on the A635, gated on the A662 until its offsets are confirmed
+    bool usable() { return hakios::metal::usable(chipId()); }
     // how many times the kernel has reset a hung GPU in this run (0 when it cannot say)
     uint64_t faults();
 

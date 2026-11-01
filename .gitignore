@@ -10,4 +10,6 @@ enxerto/applelogo.h
 shim/out/
 xnu/out/
 xnu/out-*/
+# Qualcomm GPU firmware pulled from the device ROM (proprietary, not ours to publish)
+gpu/fw-marble/
 __pycache__/

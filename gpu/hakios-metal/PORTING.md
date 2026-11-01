@@ -1,72 +1,74 @@
-# hakios-metal — marble / Adreno 725 (SM7475) port
+# hakios-metal — marble / Adreno 662v2 "Adreno 725" (SM7475) port
 
-Port of `hakios-metal` from the A635 (Adreno 7c+ Gen 3, a6xx gen4) to the
-**Adreno 725** (Snapdragon 7+ Gen 2, POCO F5 "marble", a7xx gen1).
+Port of `hakios-metal` to the **POCO F5 "marble"** GPU. The chip is marketed as
+the **Adreno 725**, but the SM7475 device tree reports it as:
 
-Upstream: hakios-metal targets chip `0x06030500`. This chip is `0x43050a00`.
+```
+qcom,chipid    = 0x06060201
+qcom,gpu-model = "Adreno662v2" / "Adreno644v1"   (vk-device-id 0x060602xx)
+```
+
+i.e. the **a6xx gen4 register family** — the same family the driver already
+targets for the A635 (0x06030500). That makes this port much closer than a
+from-scratch a7xx port: the `a6xx.hpp` register table mostly carries over and
+only the chip facts + the SM7475 memory map differ.
 
 ## What this port adds
 
-- `include/hakios-metal/a7xx.hpp` — the A725 chip facts (chip id, SP/fiber/wave
-  geometry, GMEM, alignments) in the same style as `a6xx.hpp`. Values not yet
-  confirmed against Mesa's `a7xx.xml` are marked `verify:`.
-- `include/hakios-metal/chip.hpp` — a generation dispatch layer. It reads the
-  kernel-reported chip id and selects the a6xx or a7xx table, exposing one
-  `ChipInfo` for the emitters. `usable()` gates a7xx off until its register
-  table is confirmed.
-- `Gpu::generation()`, `Gpu::info()`, `Gpu::usable()` in `gpu.hpp`.
-- `src/iokit_transport.cpp` — binds the kernel service by trying
-  `SweetAdreno630` (Project Apple / SWEET) then `HakiosGPU` (upstream), so the
-  same driver attaches to either kernel.
-- `src/gpu.cpp` — `surfaceBo()` is dual-ABI: it first asks the SWEET
-  `SweetAdreno630` selector `0x71` (`sweet_gpu_surface_bo`, 128 B, which also
-  reports the GPU iova), then falls back to hakios's `0x7e` (`HakiosSurface`).
-  The rest of the msm ioctl surface (GEM_NEW/INFO/CPU_PREP/SUBMIT/WAIT_FENCE/
-  SUBMITQUEUE/GEM_CLOSE at 0x40-0x4b + 0x09) is already selector-compatible
-  with `sweet_adreno_abi.h`.
+- `include/hakios-metal/a662.hpp` — the A662v2 chip facts: chip id
+  `0x06060201`, GPU_ID 725, and the **real SM7475 MMIO map** (GPU core
+  `0x3d00000`, gpucc `0x3d90000`, qsmmu `0x3da0000`, rscc `0x3de0000`,
+  cx_dbgc `0x3d61000`, qdss `0x10900000`, IRQs SPI `0x12c`/`0x11e`) taken from
+  `marble.dts`. The A630/beryllium addresses baked into the kernel's
+  SweetAdreno bring-up are different — this header is the substitution table.
+- `include/hakios-metal/chip.hpp` — chip-id dispatch (`ChipGeneration`,
+  `chipName`, `chipInfo`) so the driver picks a635 vs a662 facts by the
+  kernel-reported chip id.
+- `src/iokit_transport.cpp` — binds `SweetAdreno630` (Project Apple) then
+  `HakiosGPU` (upstream).
+- `src/gpu.cpp` — dual-ABI `surfaceBo()` (SWEET `0x71` + hakios `0x7e`).
 
-## What is NOT done yet (the real port work)
+## GPU firmware (from the marble vendor ROM)
 
-1. **a7xx register table.** `a6xx.hpp` is 4489 lines of A6xx registers. The
-   a7xx generation moves many SP_*/HLSQ_* offsets and adds BV/BR blocks. They
-   must be re-tabulated from Mesa `src/freedreno/registers/adreno/a7xx.xml`
-   (and `adreno_pm4.xml`, `adreno_common.xml` for the shared fields), the same
-   way `tools/check-a6xx.py` checks a6xx.hpp today. Until then
-   `a7xx::kA7xxRegistersConfirmed = false` and `usable()` refuses a7xx.
-2. **Emitters.** `compute.cpp` and `render.cpp` write a6xx offsets. They need
-   an a7xx path (freedreno `a7xx/` in turnip is the reference order).
-3. **Kernel driver (the hard part).** This is a *userspace* Metal driver. It
-   needs a kernel GPU service. The SWEET kernel already ships `SweetAdreno630`
-   (`bsd/dev/sweet_a630.c` + `iokit/Kernel/arm/SweetAdreno.cpp`) — but it is
-   written for the **Adreno 630 of the POCO F1 (beryllium)**, a different SoC
-   and a different register/SMMU/GMU layout. To light the Adreno 725 it must be
-   ported to the SM7475 GPU (marble): new MMIO bases, the A7xx GMU/HFI
-   programming, the marble SMMU context, and the clock/DCVS table. Then
-   `sweetgpu=8 sweetgpuuc=1` will publish it (as `AGXDeviceUserClient`, which
-   Metal's sandbox allows). Do NOT enable `sweetgpu=8` on marble now: the A630
-   register poke in the wrong hardware hangs the bus at boot.
-4. **GPU firmware (per-device, not redistributable).** The Adreno 725 needs
-   `a725_gmu.bin`, `a725_sqe.fw` and a signed zap shader pulled from the phone's
-   own Android `/vendor/firmware` (`adb pull`), the same way the A630 flow needs
-   `a630_zap.*`. Without the zap the CP never leaves secure mode and the GPU
-   cannot run.
+Available and redistributable-into-the-image:
+
+| File | Source | Use |
+|---|---|---|
+| `a662_gmu.bin` | `/vendor/firmware/a662_gmu.bin` | GMU (power mgmt) firmware |
+| `a662_zap.mdt` + `.b00/.b01/.b02` | `/vendor/firmware/` | **signed zap shader** — required for the CP to leave secure mode |
+| `a660_sqe.fw` | `/vendor/firmware/a660_sqe.fw` | SQE (command engine) firmware |
+
+These go in the iOS root at `/usr/local/share/firmware/` (or embedded in the
+ADT `/sweet-gpu` node via `tools/adt-gpufw.py` / `tools/mkadt.py`), the same
+paths `sweet_a630.c` already searches.
+
+## What is NOT done yet (the real kernel port)
+
+The **userspace** driver is wired end-to-end. The remaining work is the
+kernel-side `SweetAdreno` bring-up for SM7475 — `bsd/dev/sweet_a630.c` is
+written for the POCO F1's Adreno 630 (beryllium): different MMIO bases, the
+qsmmu-v500 (not arm-smmu), the A662 GMU/HFI programming, and the marble
+clock/DCVS table (`qcom,gpu-pwrlevels-*` in the dts). Until that exists,
+`sweetgpu=8` on marble must NOT be set — it would poke A630 addresses into
+SM7475 hardware and hang the bus at boot.
+
+To light the GPU:
+
+1. Port the register/base addresses (a662.hpp has them) + the GMU/zap/SQE
+   load sequence to the SM7475.
+2. Boot with `sweetgpu=8 sweetgpuuc=1` → the kernel publishes
+   `AGXDeviceUserClient` (the class Metal's sandbox allows).
+3. This driver then opens `SweetAdreno630`, sees chip id `0x06060201`,
+   reports `a662/Adreno725` through `Gpu::info()`, and submits PM4.
+
+`a662::kA662RegistersConfirmed` in `a662.hpp` gates a662 submissions; flip it
+once the A662-specific offsets are verified against a downstream kgsl header.
 
 ## Build / test
 
-Same as upstream: `make test` runs the host tests against `fake_gpu`. The fake
-GPU currently models a6xx; extend it (or add an a7xx mode) once the register
-table lands. On-device use requires the kernel `HakiosGPU` service and
+`make test` runs the host tests against `fake_gpu` (currently models a6xx —
+the right family for A662). On-device use needs the kernel service and
 `bglrender=1`.
 
-## Layout
-
-```
-include/hakios-metal/   gpu.hpp chip.hpp a6xx.hpp a7xx.hpp pm4.hpp ...
-src/                    PM4/compute/render/texture emitters, iokit_transport
-plugin/                 HakiosMetal.m — MTLDevice plugin
-tools/                  probe, check-a6xx.py, sweep
-tests/                  host tests + shader fixtures
-```
-
-Credit: original hakios-metal authors. Marble port for the Bergamota /
-Project-Apple kernel (POCO F5).
+Credit: original hakios-metal authors (github.com/oosexgang/hakios-metal).
+Marble port for the Bergamota / Project-Apple kernel (POCO F5).
