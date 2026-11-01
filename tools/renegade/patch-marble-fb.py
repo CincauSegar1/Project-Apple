@@ -307,6 +307,27 @@ PATCHES = (
      b'\x00' * 44,
      b'SWEETDBG present lmask=%x ids %u %u %u %u\n\x00',
      'format string for present() swap-record diagnostic'),
+    # Second diagnostic: log the RAW iOS18 swap record words (in[0x98], [0x9c],
+    # [0xa0], [0xa4]) at SwapEnd, before translation. The binary reads surface
+    # ids from in+0x98 but the patch comment says 0x9c; this shows which offset
+    # actually carries the ids so the translate can be corrected.
+    (0xb4cf30,
+     bytes.fromhex('e8320491'),
+     bytes.fromhex('c831e717'),
+     'kSweetFBSwapEnd: branch to raw-input diagnostic trampoline at 0x515650'),
+    (0x515650,
+     bytes.fromhex('1f2003d5') * 23,
+     bytes.fromhex(
+         'e007baa9e20f01a9e41702a9e61f03a9fe2300f9'
+         'e89a40b9e99e40b9eaa240b9eba640b9'
+         'e103082ae203092ae3030a2ae4030b2a'
+         '00e4fff000400f912dac1594fe2340f9e61f43a9'
+         'e41742a9e20f41a9e007c6a8e832049123ce1814'),
+     'trampoline at 0x515650: IOLog raw iOS18 swap input offsets 0x98-0xa4'),
+    (0x19c3d0,
+     b'\x00' * 48,
+     b'SWEETDBG swapin raw 98=%x 9c=%x a0=%x a4=%x\n\x00',
+     'format string for SwapEnd raw-input diagnostic'),
 )
 
 
