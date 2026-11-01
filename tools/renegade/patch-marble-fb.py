@@ -295,14 +295,15 @@ PATCHES = (
      bytes.fromhex('5338e717'),
      'AppleCLCD::present: branch to swap-record diagnostic trampoline at 0x5155d0'),
     (0x5155d0,
-     bytes.fromhex('1f2003d5') * 25,
+     bytes.fromhex('1f2003d5') * 30,
      bytes.fromhex(
-         'e007baa9e20f01a9e41702a9e61f03a9fe2300f9'
+         '0906a052481038d5080109aa481018d5df3f03d5'
+         'e007b9a9e20f01a9e41702a9e61f03a9fe2300f9'
          '280441b9295440b92a5840b92b5c40b92c6040b9'
          'e103082ae203092ae3030a2ae4030b2ae5030c2a'
-         '00e4fff000800e914bac1594fe2340f9e61f43a9'
-         'e41742a9e20f41a9e007c6a8285040b996c71814'),
-     'trampoline at 0x5155d0: IOLog lmask + 4 surface ids for present() swap record'),
+         '00e4fff000800e9146ac1594fe2340f9e61f43a9'
+         'e41742a9e20f41a9e007c7a8285040b991c71814'),
+     'trampoline at 0x5155d0: enable FPEN then IOLog lmask + 4 surface ids'),
     (0x19c3a0,
      b'\x00' * 44,
      b'SWEETDBG present lmask=%x ids %u %u %u %u\n\x00',
@@ -316,14 +317,15 @@ PATCHES = (
      bytes.fromhex('c831e717'),
      'kSweetFBSwapEnd: branch to raw-input diagnostic trampoline at 0x515650'),
     (0x515650,
-     bytes.fromhex('1f2003d5') * 23,
+     bytes.fromhex('1f2003d5') * 28,
      bytes.fromhex(
-         'e007baa9e20f01a9e41702a9e61f03a9fe2300f9'
+         '0906a052481038d5080109aa481018d5df3f03d5'
+         'e007b9a9e20f01a9e41702a9e61f03a9fe2300f9'
          'e89a40b9e99e40b9eaa240b9eba640b9'
          'e103082ae203092ae3030a2ae4030b2a'
-         '00e4fff000400f912dac1594fe2340f9e61f43a9'
-         'e41742a9e20f41a9e007c6a8e832049123ce1814'),
-     'trampoline at 0x515650: IOLog raw iOS18 swap input offsets 0x98-0xa4'),
+         '00e4fff000400f9128ac1594fe2340f9e61f43a9'
+         'e41742a9e20f41a9e007c7a8e83204911ece1814'),
+     'trampoline at 0x515650: enable FPEN then IOLog raw iOS18 swap input'),
     (0x19c3d0,
      b'\x00' * 48,
      b'SWEETDBG swapin raw 98=%x 9c=%x a0=%x a4=%x\n\x00',
