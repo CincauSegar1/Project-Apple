@@ -410,6 +410,26 @@ PATCHES = (
      'sweetadreno: SweetGPUChipID high half 0x0603 -> 0x0606'),
     (0x3e6dc, (0x06030001).to_bytes(4, 'little'), (0x06060201).to_bytes(4, 'little'),
      'sweetadreno: GPU select-info chip id 0x06030001 -> 0x06060201'),
+
+    # ---- Safe GPU Publish for Marble (SM7475 / Adreno 662) -----------------
+    # 1. Do not hang on SDM845 GCC clock 0x71004: make gpu_report() return 0 safely.
+    (0x593d88, bytes.fromhex('ff0302d1'), bytes.fromhex('1f0000b9'),
+     'sweetadreno: gpu_report: str wzr, [x0] (safe return without touching SDM845 GCC)'),
+    (0x593d8c, bytes.fromhex('fa6703a9'), bytes.fromhex('00008052'),
+     'sweetadreno: gpu_report: mov w0, #0'),
+    (0x593d90, bytes.fromhex('f85f04a9'), bytes.fromhex('c0035fd6'),
+     'sweetadreno: gpu_report: ret'),
+    # 2. Allow sweet_a630_probe to proceed regardless of sweetgpu boot-arg:
+    (0x58e928, bytes.fromhex('cb170054'), bytes.fromhex('1f2003d5'),
+     'sweetadreno: probe nop b.lt (always proceed to publish GPU)'),
+    # 3. Direct sweet_a630_probe to SweetAdrenoPublish instead of a630_run:
+    (0x58ebe0, bytes.fromhex('6c000054'), bytes.fromhex('1f2003d5'),
+     'sweetadreno: probe nop b.gt'),
+    (0x58ebe4, bytes.fromhex('1c000094'), bytes.fromhex('d5fb1694'),
+     'sweetadreno: probe bl SweetAdrenoPublish (publish SweetAdreno630 service for hakios-metal)'),
+    # 4. In SweetAdrenoPublish, remove check for a630_kept so service publishes:
+    (0xb4db54, bytes.fromhex('c00d0034'), bytes.fromhex('1f2003d5'),
+     'sweetadreno: SweetAdrenoPublish nop cbz w0 (always register IOKit service)'),
 )
 
 
