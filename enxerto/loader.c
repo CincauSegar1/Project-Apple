@@ -13,6 +13,7 @@
  * mmu_off_jump cleans it all to memory before xnu starts.
  */
 #include <stdint.h>
+#include "board.h"
 #include "bootui.h"
 #include "charger.h"
 #include "console.h"
@@ -211,6 +212,66 @@ const char *loader_boot(uintptr_t dtb)
 	return loader_boot_payload(rd_start, rd_end, 0);
 }
 
+#if defined(BOARD_MARBLE)
+static void marble_cpufreq_boost(void)
+{
+	/*
+	 * SM7475 EPSS (Enhanced Power Scaling Subsystem, marble.dts qcom,cpufreq-hw):
+	 *   Domain 0: 0x17d91000 (Silver / Little: 4x Cortex-A510)
+	 *   Domain 1: 0x17d92000 (Gold / Big: 3x Cortex-A710)
+	 *   Domain 2: 0x17d93000 (Gold+ / Prime: 1x Cortex-X2)
+	 *
+	 * ABL leaves all cores at baseline ~300 MHz. Raise all domains to their
+	 * top frequency state so iOS 18 boots in 30-40 seconds instead of 6 minutes.
+	 */
+	static const uintptr_t domains[3] = {
+		0x17d91000UL,
+		0x17d92000UL,
+		0x17d93000UL
+	};
+
+	for (int d = 0; d < 3; d++) {
+		volatile uint32_t *base = (volatile uint32_t *)domains[d];
+		uint32_t en = base[0];
+		if (!(en & 1U)) {
+			con_hex2("CPUFREQ", "skip_dom=", (uint32_t)d, "en=", en);
+			continue;
+		}
+
+		uint32_t best_idx = 0;
+		uint32_t best_mhz = 0;
+		uint32_t prev_mhz = 0;
+
+		/* Read LUT: offset +0x100, 4 bytes per entry */
+		for (uint32_t i = 0; i < 32; i++) {
+			uint32_t v = base[(0x100 / 4) + i];
+			if (v == 0)
+				break;
+			uint32_t src = (v >> 30) & 3U;
+			uint32_t lval = v & 0xffU;
+			uint32_t mhz = src ? (lval * 192U) / 10U : 300U;
+			if (i > 0 && mhz == prev_mhz)
+				break;
+			prev_mhz = mhz;
+			if (mhz > best_mhz) {
+				best_mhz = mhz;
+				best_idx = i;
+			}
+		}
+
+		if (best_mhz > 0) {
+			__asm__ volatile("dsb sy" ::: "memory");
+			base[0x320 / 4] = best_idx;
+			base[0x324 / 4] = best_idx;
+			base[0x328 / 4] = best_idx;
+			base[0x32c / 4] = best_idx;
+			__asm__ volatile("dsb sy" ::: "memory");
+			con_hex2("CPUFREQ", "dom=", (uint32_t)d, "mhz=", best_mhz);
+		}
+	}
+}
+#endif
+
 /*
  * Boot the payload in [rd_start, rd_end) (ABL ramdisk or the fastboot download); returns only on error.
  * verify: run loader_check() first (always for downloads; the ABL ramdisk path keeps its old trust).
@@ -342,6 +403,9 @@ const char *loader_boot_payload(uintptr_t rd_start, uintptr_t rd_end, int verify
 	con_hex("JUMP", entry_pa);
 	bootui_progress(1000, "STARTING IOS");
 	enxerto_charger_handoff();	/* the kernel's sweetcharger=2 finds the charger registers as ABL left them */
+#if defined(BOARD_MARBLE)
+	marble_cpufreq_boost();
+#endif
 	con_str("XNU", "JUMPING TO IOS 18");
 	bootui_handoff();
 
