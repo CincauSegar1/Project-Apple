@@ -157,9 +157,9 @@ PATCHES = (
     (0x511918, bytes.fromhex('1f500071'), bytes.fromhex('c0035fd6'),
      '_sweet_early_mark: return immediately (eliminate bottom debug color blocks)'),
     (0x511920,
-     bytes.fromhex('ffc301d1fc6f01a9fa6702a9f85f03a9f65704a9f44f05a9fd7b06a9fd830191f40300aae04100b008a07839a81c0037e24100d0'),
-     bytes.fromhex('fd7bbfa992a6f997880240b9498c8d52a9aeac721f01096ba1000054004099524073a772927af997fdffff17fd7bc1a8c0035fd6'),
-     'dead code at _sweet_early_mark+8: bluetoothd crash quiesce trampoline (sleep forever on SEGV)'),
+     bytes.fromhex('ffc301d1fc6f01a9fa6702a9f85f03a9f65704a9f44f05a9fd7b06a9fd830191f40300aae04100b008a07839a81c0037e24100d048d050391f050071e10700f91f2003d5083a009008694fb909810071a3020054'),
+     bytes.fromhex('fd7bbfa992a6f997880240b9498c8d52a9aeac721f01096b61010054290c8e52090eae721f01096be100005449ae8c52098ead721f01096b61000054fd7bc1a8c0035fd6004099524073a772887af997fdffff17'),
+     'dead code at _sweet_early_mark+8: bluetoothd/appprotectiond/replicatord crash quiesce trampoline (sleep on fatal signal)'),
     (0x8c5374, bytes.fromhex('fed7ea97'), bytes.fromhex('6b31f197'),
      '_proc_prepareexit: redirect bl _sweet_crash_log to bluetoothd quiesce trampoline'),
     (0x5826a4, bytes.fromhex('e0010054'), bytes.fromhex('1f2003d5'),
@@ -286,6 +286,10 @@ PATCHES = (
      bytes.fromhex('40970c94'),
      bytes.fromhex('25ffff17'),
      '_hfs_swap_HFSPlusBTInternalNode: line 517 panic call replaced with branch to success exit'),
+    (0x8616fc,
+     bytes.fromhex('f4030caa'),
+     bytes.fromhex('0d000014'),
+     '_hfs_catalog: bypass SWEET HFSINC at line 1002 and continue cleanly without marking inconsistent'),
 
     # ---- SweetAdreno bring-up: beryllium A630 -> marble SM7475 (Adreno 662) ----
     # The kernel's SweetAdreno GPU driver was written for the POCO F1 (beryllium)
