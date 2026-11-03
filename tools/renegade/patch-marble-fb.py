@@ -314,7 +314,7 @@ PATCHES = (
     # actually carries the ids so the translate can be corrected.
     (0xb4cf30,
      bytes.fromhex('e8320491'),
-     bytes.fromhex('c831e717'),
+     bytes.fromhex('c821e717'),
      'kSweetFBSwapEnd: branch to raw-input diagnostic trampoline at 0x515650'),
     (0x515650,
      bytes.fromhex('1f2003d5') * 28,
@@ -392,6 +392,24 @@ PATCHES = (
     # gpu_microcode (zap) reserved region literal 0x8c415000 -> 0x8bb1a000
     (0x2e16a8, (0x8c415000).to_bytes(8, 'little'), (0x8bb1a000).to_bytes(8, 'little'),
      'sweetadreno: zap/gpu_microcode region 0x8c415000 -> 0x8bb1a000'),
+
+    # ---- Allow sweet_a630_probe() to run on marble -------------------------
+    # The probe begins with the inlined sweet_board_beryllium() test and returns
+    # for any other board. These two conditional branches are turned into
+    # unconditional ones to the "continue" block, so the driver is reachable on
+    # marble. Nothing runs unless sweetgpu=N is on the command line.
+    (0x58e82c, bytes.fromhex('00070054'), bytes.fromhex('38000014'),
+     'sweetadreno: probe cached-board b.eq -> b (allow marble)'),
+    (0x58e908, bytes.fromhex('c1180054'), bytes.fromhex('1f2003d5'),
+     'sweetadreno: probe board check: b.ne -> b (allow marble)'),
+    # Report the real chip id to userspace: SweetGPUChipID 0x06030001 -> 0x06060201
+    # (marble.dts qcom,chipid / Adreno662v2). The service name stays SweetAdreno630.
+    (0xb4dc6c, bytes.fromhex('22008052'), bytes.fromhex('22408052'),
+     'sweetadreno: SweetGPUChipID low half 0x0001 -> 0x0201'),
+    (0xb4dc70, bytes.fromhex('62c0a072'), bytes.fromhex('c2c0a072'),
+     'sweetadreno: SweetGPUChipID high half 0x0603 -> 0x0606'),
+    (0x3e6dc, (0x06030001).to_bytes(4, 'little'), (0x06060201).to_bytes(4, 'little'),
+     'sweetadreno: GPU select-info chip id 0x06030001 -> 0x06060201'),
 )
 
 
