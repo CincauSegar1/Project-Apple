@@ -286,50 +286,6 @@ PATCHES = (
      bytes.fromhex('40970c94'),
      bytes.fromhex('25ffff17'),
      '_hfs_swap_HFSPlusBTInternalNode: line 517 panic call replaced with branch to success exit'),
-    # Diagnostic: log the iOS18->legacy swap record that present() sees.
-    # Hooks the first instr of the lmask/id block (ldr w8,[x1,#0x50] at
-    # 0xb47484) and branches to a trampoline that IOLogs lmask + all 4
-    # surface IDs, then re-executes the hooked ldr and returns.
-    (0xb47484,
-     bytes.fromhex('285040b9'),
-     bytes.fromhex('5338e717'),
-     'AppleCLCD::present: branch to swap-record diagnostic trampoline at 0x5155d0'),
-    (0x5155d0,
-     bytes.fromhex('1f2003d5') * 30,
-     bytes.fromhex(
-         '0906a052481038d5080109aa481018d5df3f03d5'
-         'e007b9a9e20f01a9e41702a9e61f03a9fe2300f9'
-         '280441b9295440b92a5840b92b5c40b92c6040b9'
-         'e103082ae203092ae3030a2ae4030b2ae5030c2a'
-         '00e4fff000800e9146ac1594fe2340f9e61f43a9'
-         'e41742a9e20f41a9e007c7a8285040b991c71814'),
-     'trampoline at 0x5155d0: enable FPEN then IOLog lmask + 4 surface ids'),
-    (0x19c3a0,
-     b'\x00' * 44,
-     b'SWEETDBG present lmask=%x ids %u %u %u %u\n\x00',
-     'format string for present() swap-record diagnostic'),
-    # Second diagnostic: log the RAW iOS18 swap record words (in[0x98], [0x9c],
-    # [0xa0], [0xa4]) at SwapEnd, before translation. The binary reads surface
-    # ids from in+0x98 but the patch comment says 0x9c; this shows which offset
-    # actually carries the ids so the translate can be corrected.
-    (0xb4cf30,
-     bytes.fromhex('e8320491'),
-     bytes.fromhex('c821e717'),
-     'kSweetFBSwapEnd: branch to raw-input diagnostic trampoline at 0x515650'),
-    (0x515650,
-     bytes.fromhex('1f2003d5') * 28,
-     bytes.fromhex(
-         '0906a052481038d5080109aa481018d5df3f03d5'
-         'e007b9a9e20f01a9e41702a9e61f03a9fe2300f9'
-         'e89a40b9e99e40b9eaa240b9eba640b9'
-         'e103082ae203092ae3030a2ae4030b2a'
-         '00e4fff000400f9128ac1594fe2340f9e61f43a9'
-         'e41742a9e20f41a9e007c7a8e83204911ece1814'),
-     'trampoline at 0x515650: enable FPEN then IOLog raw iOS18 swap input'),
-    (0x19c3d0,
-     b'\x00' * 48,
-     b'SWEETDBG swapin raw 98=%x 9c=%x a0=%x a4=%x\n\x00',
-     'format string for SwapEnd raw-input diagnostic'),
 
     # ---- SweetAdreno bring-up: beryllium A630 -> marble SM7475 (Adreno 662) ----
     # The kernel's SweetAdreno GPU driver was written for the POCO F1 (beryllium)
