@@ -145,7 +145,7 @@ static bool goodix_read(struct marble_touch_ctx *ctx, uint32_t address, uint8_t 
         spi_transfer_byte(ctx, tx[i], 0);
     }
     for (uint32_t i = 0; i < length; i++) {
-        spi_transfer_byte(ctx, 0xff, &data[i]);
+        spi_transfer_byte(ctx, 0x00, &data[i]);
     }
     for (volatile int d = 0; d < 2000; d++) __asm__ volatile("nop");
     gpio_set(ctx->tlmm, PIN_CS, 1);
@@ -261,11 +261,32 @@ void marble_touch_entry(void) {
     delay(10, 1000000);
 
     // Configure SPI pins: CLK, CS, INT
+    xnu_kprint("SWEET TOUCH: ABL TLMM: 16=0x%x 17=0x%x 18=0x%x 19=0x%x 20=0x%x 21=0x%x\n",
+               rd(ctx.tlmm, GPIO_CFG(16)), rd(ctx.tlmm, GPIO_CFG(17)),
+               rd(ctx.tlmm, GPIO_CFG(18)), rd(ctx.tlmm, GPIO_CFG(19)),
+               rd(ctx.tlmm, GPIO_CFG(20)), rd(ctx.tlmm, GPIO_CFG(21)));
+
     gpio_cfg(ctx.tlmm, PIN_CLK, 0, 0, 6, true);
     gpio_cfg(ctx.tlmm, PIN_CS, 0, 3, 6, true);
     gpio_cfg(ctx.tlmm, PIN_INT, 0, 3, 6, false);
     gpio_set(ctx.tlmm, PIN_CS, 1);
     gpio_set(ctx.tlmm, PIN_CLK, 0);
+
+    gpio_set(ctx.tlmm, 16, 1);
+    bool m16_hi = gpio_get(ctx.tlmm, 16);
+    gpio_set(ctx.tlmm, 16, 0);
+    bool m16_lo = gpio_get(ctx.tlmm, 16);
+    gpio_set(ctx.tlmm, 18, 1);
+    bool c18_hi = gpio_get(ctx.tlmm, 18);
+    gpio_set(ctx.tlmm, 18, 0);
+    bool c18_lo = gpio_get(ctx.tlmm, 18);
+    gpio_set(ctx.tlmm, 19, 1);
+    bool cs_hi = gpio_get(ctx.tlmm, 19);
+    gpio_set(ctx.tlmm, 19, 0);
+    bool cs_lo = gpio_get(ctx.tlmm, 19);
+    xnu_kprint("SWEET TOUCH: pin test: 16=(%d,%d) 18=(%d,%d) 19=(%d,%d) INT=%d\n",
+               m16_hi?1:0, m16_lo?1:0, c18_hi?1:0, c18_lo?1:0, cs_hi?1:0, cs_lo?1:0,
+               gpio_get(ctx.tlmm, PIN_INT) ? 1 : 0);
 
     // Adaptive probe: test both pin assignments (16=MOSI/17=MISO or 17=MOSI/16=MISO)
     // and both dummy-byte lengths (3 and 4 bytes)
@@ -364,6 +385,7 @@ void marble_touch_entry(void) {
     bool pwr_down = false;
     bool vdn_down = false;
     bool vup_down = false;
+    bool int_last = true;
 
     xnu_kprint("SWEET TOUCH: Marble Goodix native hardware polling active (125 Hz). Touch & Physical Keys ON!\n");
 
@@ -404,12 +426,24 @@ void marble_touch_entry(void) {
             }
         }
 
+        // Monitor INT pin (GPIO 21)
+        bool int_now = gpio_get(ctx.tlmm, PIN_INT);
+        if (int_now != int_last) {
+            int_last = int_now;
+            xnu_kprint("SWEET TOUCH: INT level -> %d\n", int_now ? 1 : 0);
+        }
+
         // Touch Screen Polling: read touch report every tick (125 Hz)
         if (!goodix_read(&ctx, touch_address, report, 8)) {
             continue;
         }
 
         uint8_t status = report[0];
+        if (status != 0 && status != 0xff && report_count < 20) {
+            xnu_kprint("SWEET TOUCH: raw report: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                       (uint32_t)report[0], (uint32_t)report[1], (uint32_t)report[2], (uint32_t)report[3],
+                       (uint32_t)report[4], (uint32_t)report[5], (uint32_t)report[6], (uint32_t)report[7]);
+        }
         if (status == 0 || status == 0xff || !(status & GOODIX_STATUS_TOUCH)) {
             if (status & GOODIX_STATUS_TOUCH) {
                 goodix_write(&ctx, touch_address, &zero, 1);
