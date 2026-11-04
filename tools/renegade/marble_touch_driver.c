@@ -61,6 +61,7 @@ static void xnu_kprint(const char *fmt, ...) {
         "mov x8, #0x31d0\n"
         "movk x8, #0x73a, lsl #16\n"
         "movk x8, #0xfe00, lsl #32\n"
+        "movk x8, #0xffff, lsl #48\n"
         "blr x8\n"
         "ldr x30, [sp, #56]\n"
         "add sp, sp, #64\n"
