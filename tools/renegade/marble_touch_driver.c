@@ -1,25 +1,21 @@
 /*
- * Marble Touch Driver: Goodix GT9916R (Berlin-D) SPI Touchscreen for Poco F5 (SM7475)
- * Direct XNU Kernel Integration via SweetHIDTouch / IOHIDEventService & SweetHIDButtons.
+ * Marble Native Hardware Input Driver for Poco F5 (SM7475 / iOS 18)
  *
- * Bus: Cape QUPv3 SE4 SPI
- * Pins:
- *   GPIO 16: MOSI (qup0_se4 pad 0)
- *   GPIO 17: MISO (qup0_se4 pad 1)
- *   GPIO 18: CLK  (qup0_se4 pad 2)
- *   GPIO 19: CS   (qup0_se4 pad 3, Active Low)
- *   GPIO 20: RESET (Kept HIGH by ABL; NEVER touched to avoid OLED blanking/reset)
- *   GPIO 21: IRQ / INT (Falling edge / Low on contact)
+ * 1. Native Touchscreen: Goodix GT9916R (Berlin-D) on Cape QUPv3 SE4 SPI
+ *    - GPIO 16: MOSI
+ *    - GPIO 17: MISO
+ *    - GPIO 18: CLK
+ *    - GPIO 19: CS (Active Low)
+ *    - GPIO 20: RESET (Kept HIGH by ABL; NEVER touched)
+ *    - GPIO 21: IRQ / INT (Falling edge / Low on contact)
  *
- * Cape TLMM GPIO Bank: 0x0f000000 (SM7475 Cape PINCTRL REG_BASE)
+ * 2. Native Physical Buttons: PMIC SPMI Observer (0x0c440000)
+ *    - Power Button: PMIC PON (PPID 0x008), reg 0x0810, bit 0
+ *    - Volume Down:  PMIC PON (PPID 0x008), reg 0x0810, bit 1
+ *    - Volume Up:    PMIC GPIO6 (PPID 0x0c5), reg 0xc510, bit 7
  *
- * NOTE: This driver is injected into the read-only __TEXT_EXEC segment (_touch_thread).
- * ALL state variables MUST reside exclusively on the execution stack. ZERO writes to
- * static/global data (.bss / .data) are allowed, as any static write causes a data abort
- * ("SWEET EARLY PANIC: Unexpected fault in kernel static region").
- *
- * INVARIANT: marble_touch_entry MUST NEVER RETURN (no ret). Thread continuation in XNU
- * has no caller return frame; returning causes kernel instruction fetch abort.
+ * Compiled with -mgeneral-regs-only to prevent FP/NEON register exceptions in XNU kernel threads.
+ * NO virtual gestures, NO auto-swipe. 100% pure hardware input.
  */
 
 #include <stdint.h>
@@ -39,6 +35,8 @@ typedef int (*printf_fn)(const char *fmt, ...);
 
 #define TLMM_PHYS             0x0f000000ULL
 #define TLMM_SIZE             0x20000ULL
+#define SPMI_CORE_PA          0x0c400000ULL
+#define SPMI_OBS_PA           0x0c440000ULL
 
 #define PIN_MOSI_DEFAULT      16
 #define PIN_MISO_DEFAULT      17
@@ -69,7 +67,11 @@ static inline uint32_t rd(volatile uint32_t *tlmm, uint32_t reg) {
 #define GPIO_IO(n)  ((n) * 0x1000 + 4)
 
 static void gpio_cfg(volatile uint32_t *tlmm, int pin, int func, int pull, int drive, bool out) {
-    wr(tlmm, GPIO_CFG(pin), (pull & 3) | ((func & 0xf) << 2) | (((drive / 2) - 1) << 6) | (out ? (1 << 9) : 0));
+    uint32_t off = GPIO_CFG(pin);
+    uint32_t cfg = rd(tlmm, off);
+    cfg &= ~0x3ffu;
+    cfg |= (pull & 3) | ((func & 0xf) << 2) | (((drive / 2) - 1) << 6) | (out ? (1 << 9) : 0);
+    wr(tlmm, off, cfg);
 }
 
 static void gpio_set(volatile uint32_t *tlmm, int pin, bool val) {
@@ -145,6 +147,35 @@ static bool goodix_write(struct marble_touch_ctx *ctx, uint32_t address, const u
     return true;
 }
 
+static uint16_t find_apid(volatile uint32_t *core, uint16_t ppid, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t map = rd(core, 0x900 + 4 * i);
+        if (((map >> 8) & 0xfff) == ppid) {
+            return (uint16_t)i;
+        }
+    }
+    return 0xffff;
+}
+
+static bool spmi_read_byte(volatile uint32_t *obs, uint16_t apid, uint16_t addr, uint8_t *out) {
+    if (apid == 0xffff) return false;
+    uint32_t off = 0x80 * apid;
+    uint32_t cmd = (1u << 27) | ((uint32_t)(addr & 0xff) << 4);
+    __asm__ volatile("dmb oshst" ::: "memory");
+    obs[off >> 2] = cmd;
+    __asm__ volatile("dsb osh" ::: "memory");
+    for (int i = 0; i < 400; i++) {
+        uint32_t st = rd(obs, off + 0x08);
+        if (st & 1) {
+            if (st & 0x0e) return false;
+            *out = (uint8_t)rd(obs, off + 0x18);
+            return true;
+        }
+        for (volatile int d = 0; d < 40; d++) __asm__ volatile("nop");
+    }
+    return false;
+}
+
 static inline uint16_t le16(const uint8_t *p) {
     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
 }
@@ -168,43 +199,47 @@ void marble_touch_entry(void) {
     printf_fn kprint = (printf_fn)PRINTF_ADDR;
 
     struct marble_touch_ctx ctx;
-    ctx.pin_mosi = PIN_MOSI_DEFAULT; // 16
-    ctx.pin_miso = PIN_MISO_DEFAULT; // 17
+    ctx.pin_mosi = PIN_MOSI_DEFAULT;
+    ctx.pin_miso = PIN_MISO_DEFAULT;
 
-    // 15-second stabilization delay: wait for launchd, tzinit, and display server
-    // to complete early boot initialization before touching TLMM or polling SPI.
-    kprint("SWEET TOUCH: waiting 15s for early boot stabilization...\n");
-    for (int s = 0; s < 15; s++) {
+    // Wait 10s for launchd and display server initialization
+    kprint("SWEET TOUCH: waiting 10s for early boot stabilization...\n");
+    for (int s = 0; s < 10; s++) {
         delay(1000, 1000000);
     }
 
-    kprint("SWEET TOUCH: initializing Marble Goodix GT9916R on Cape SPI (TLMM 0x%08llx)...\n", TLMM_PHYS);
-
-    ctx.tlmm = (volatile uint32_t *)ml_io_map(TLMM_PHYS, TLMM_SIZE);
-    if (!ctx.tlmm) {
-        kprint("SWEET TOUCH: failed to map Cape TLMM at 0x%08llx!\n", TLMM_PHYS);
-        while (1) {
-            delay(1000, 1000000);
-        }
+    // Map SPMI for Physical Power & Volume Buttons
+    volatile uint32_t *spmi_core = (volatile uint32_t *)ml_io_map(SPMI_CORE_PA, 0x3000);
+    volatile uint32_t *spmi_obs = (volatile uint32_t *)ml_io_map(SPMI_OBS_PA, 0x80000);
+    uint16_t apid_pon = 0xffff;
+    uint16_t apid_volup = 0xffff;
+    if (spmi_core && spmi_obs) {
+        apid_pon = find_apid(spmi_core, 0x008, 768);
+        apid_volup = find_apid(spmi_core, 0x0c5, 768);
+        kprint("SWEET KEYS: Physical buttons ready (PON APID=%u, VolUp APID=%u)\n", apid_pon, apid_volup);
     }
 
-    // Configure GPIO pins for Cape SPI SE4 + Goodix TS.
-    // Invariant: NEVER configure or set GPIO 20 (PIN_RESET). ABL keeps it HIGH.
-    // Setting OE on GPIO 20 pulses active-low RESET, discharging the OLED panel
-    // charge pump (producing a white flash -> black screen -> PMIC watchdog trip).
-    gpio_cfg(ctx.tlmm, ctx.pin_mosi, 0, 0, 6, true);  // pin 16: MOSI out
-    gpio_cfg(ctx.tlmm, ctx.pin_miso, 0, 3, 6, false); // pin 17: MISO in, pull-up
-    gpio_cfg(ctx.tlmm, PIN_CLK, 0, 0, 6, true);        // pin 18: CLK out
-    gpio_cfg(ctx.tlmm, PIN_CS, 0, 3, 16, true);        // pin 19: CS out, pull-up
-    gpio_cfg(ctx.tlmm, PIN_INT, 0, 3, 8, false);       // pin 21: IRQ in, pull-up
+    // Map Cape TLMM for Goodix GT9916R SPI Touchscreen
+    kprint("SWEET TOUCH: initializing Marble Goodix GT9916R on Cape SPI (TLMM 0x%08llx)...\n", TLMM_PHYS);
+    ctx.tlmm = (volatile uint32_t *)ml_io_map(TLMM_PHYS, TLMM_SIZE);
+    if (!ctx.tlmm) {
+        kprint("SWEET TOUCH: failed to map Cape TLMM!\n");
+        while (1) delay(1000, 1000000);
+    }
+
+    // Configure GPIO pins for Cape SPI SE4 + Goodix TS (NEVER touch GPIO 20 RESET)
+    gpio_cfg(ctx.tlmm, ctx.pin_mosi, 0, 0, 6, true);
+    gpio_cfg(ctx.tlmm, ctx.pin_miso, 0, 3, 6, false);
+    gpio_cfg(ctx.tlmm, PIN_CLK, 0, 0, 6, true);
+    gpio_cfg(ctx.tlmm, PIN_CS, 0, 3, 16, true);
+    gpio_cfg(ctx.tlmm, PIN_INT, 0, 3, 8, false);
 
     gpio_set(ctx.tlmm, PIN_CS, 1);
     gpio_set(ctx.tlmm, PIN_CLK, 0);
     gpio_set(ctx.tlmm, ctx.pin_mosi, 0);
 
-    delay(50, 1000000); // 50ms pin stabilization
+    delay(50, 1000000);
 
-    // Read Version (0x10014, 28 bytes)
     uint8_t version[28];
     bool probed = false;
     for (int attempt = 0; attempt < 2; attempt++) {
@@ -228,7 +263,7 @@ void marble_touch_entry(void) {
     }
 
     if (!probed) {
-        kprint("SWEET TOUCH: Goodix GT9916R probe fallback to default pinout (mosi=16 miso=17)\n");
+        kprint("SWEET TOUCH: Goodix GT9916R fallback to default pinout (mosi=16 miso=17)\n");
         ctx.pin_mosi = 16;
         ctx.pin_miso = 17;
         gpio_cfg(ctx.tlmm, 16, 0, 0, 6, true);
@@ -271,17 +306,50 @@ void marble_touch_entry(void) {
     uint8_t zero = 0;
     uint32_t report_count = 0;
     uint32_t idle_ticks = 0;
+    uint32_t key_ticks = 0;
+    bool pwr_down = false;
+    bool vdn_down = false;
+    bool vup_down = false;
 
-    kprint("SWEET TOUCH: Marble Goodix native hardware polling active (125 Hz). Touch ON!\n");
+    kprint("SWEET TOUCH: Marble Goodix native hardware polling active (125 Hz). Touch & Physical Keys ON!\n");
 
     while (1) {
         delay(8, 1000000); // 8ms sleep = 125 Hz
         idle_ticks++;
+        key_ticks++;
+
+        // Physical Buttons Polling (every 24ms = 3 ticks)
+        if (spmi_obs && key_ticks >= 3) {
+            key_ticks = 0;
+            uint8_t pon = 0;
+            if (spmi_read_byte(spmi_obs, apid_pon, 0x0810, &pon)) {
+                bool pwr = (pon & 1) != 0;
+                bool vdn = (pon & 2) != 0;
+                if (pwr != pwr_down) {
+                    pwr_down = pwr;
+                    hid_key(0, pwr ? 1 : 0);
+                    kprint("SWEET KEYS: Physical Power %s\n", pwr ? "PRESSED" : "RELEASED");
+                }
+                if (vdn != vdn_down) {
+                    vdn_down = vdn;
+                    hid_key(2, vdn ? 1 : 0);
+                    kprint("SWEET KEYS: Physical Vol- %s\n", vdn ? "PRESSED" : "RELEASED");
+                }
+            }
+            uint8_t gpio = 0;
+            if (apid_volup != 0xffff && spmi_read_byte(spmi_obs, apid_volup, 0xc510, &gpio)) {
+                bool vup = (gpio & 0x80) != 0;
+                if (vup != vup_down) {
+                    vup_down = vup;
+                    hid_key(1, vup ? 1 : 0);
+                    kprint("SWEET KEYS: Physical Vol+ %s\n", vup ? "PRESSED" : "RELEASED");
+                }
+            }
+        }
 
         // Touch Screen Polling
         bool irq_active = !gpio_get(ctx.tlmm, PIN_INT);
         if (!irq_active && (idle_ticks < 10)) {
-            // No touch interrupt and not at 80ms watchdog tick
             continue;
         }
         idle_ticks = 0;
@@ -295,7 +363,6 @@ void marble_touch_entry(void) {
             if (status & GOODIX_STATUS_TOUCH) {
                 goodix_write(&ctx, touch_address, &zero, 1);
             }
-            // Lift all contacts if no touch reported
             for (int i = 0; i < 10; i++) {
                 if (prev_contacts[i].down) {
                     prev_contacts[i].down = false;
@@ -328,7 +395,6 @@ void marble_touch_entry(void) {
             if (raw_x > 1080) raw_x = 1080;
             if (raw_y > 2400) raw_y = 2400;
 
-            // Scale 1080x2400 physical coordinates to 1125x2436 logical canvas
             uint32_t mapped_x = (raw_x * 1125) / 1080;
             uint32_t mapped_y = (raw_y * 2436) / 2400;
             if (mapped_x > 1125) mapped_x = 1125;
@@ -359,7 +425,6 @@ void marble_touch_entry(void) {
         report_count++;
     }
 
-    // Safety fallback: NEVER return to avoid uninitialized lr instruction abort
     while (1) {
         delay(1000, 1000000);
     }

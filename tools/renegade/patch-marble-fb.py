@@ -407,13 +407,13 @@ def main():
         data[off:off + len(new)] = new
         print(f'{off:#x}: {what}')
 
-    # Inject native Marble unified input driver (Physical Keys + Auto-Swipe + Passive Touch) into 0x57d284
-    input_bin = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'marble_input.bin')
-    if os.path.exists(input_bin):
-        input_code = open(input_bin, 'rb').read()
-        input_off = 0x57d284
-        data[input_off:input_off + len(input_code)] = input_code
-        print(f'{input_off:#x}: injected native Marble unified input driver ({len(input_code)} bytes)')
+    # Inject native Marble Goodix GT9916R touch + PMIC physical keys driver into _touch_thread (0x57d284)
+    touch_bin = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'marble_touch.bin')
+    if os.path.exists(touch_bin):
+        touch_code = open(touch_bin, 'rb').read()
+        touch_off = 0x57d284
+        data[touch_off:touch_off + len(touch_code)] = touch_code
+        print(f'{touch_off:#x}: injected native Marble Goodix hardware touch + physical keys driver ({len(touch_code)} bytes)')
 
     open(dst, 'wb').write(data)
     print(f'wrote {dst} ({len(data)} bytes)')
