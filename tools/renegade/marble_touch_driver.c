@@ -107,7 +107,7 @@ static bool gpio_get(volatile uint32_t *tlmm, int pin) {
 }
 
 static void spi_delay(void) {
-    for (volatile int i = 0; i < 300; i++) {
+    for (volatile int i = 0; i < 800; i++) {
         __asm__ volatile("nop");
     }
 }
@@ -140,16 +140,16 @@ static bool goodix_read(struct marble_touch_ctx *ctx, uint32_t address, uint8_t 
     int hdr_len = 5 + dummy;
 
     gpio_set(ctx->tlmm, PIN_CS, 0);
-    spi_delay();
+    for (volatile int d = 0; d < 2000; d++) __asm__ volatile("nop");
     for (int i = 0; i < hdr_len; i++) {
         spi_transfer_byte(ctx, tx[i], 0);
     }
     for (uint32_t i = 0; i < length; i++) {
         spi_transfer_byte(ctx, 0xff, &data[i]);
     }
-    spi_delay();
+    for (volatile int d = 0; d < 2000; d++) __asm__ volatile("nop");
     gpio_set(ctx->tlmm, PIN_CS, 1);
-    spi_delay();
+    for (volatile int d = 0; d < 2000; d++) __asm__ volatile("nop");
     return true;
 }
 
@@ -162,16 +162,16 @@ static bool goodix_write(struct marble_touch_ctx *ctx, uint32_t address, const u
     tx[4] = (uint8_t)address;
 
     gpio_set(ctx->tlmm, PIN_CS, 0);
-    spi_delay();
+    for (volatile int d = 0; d < 2000; d++) __asm__ volatile("nop");
     for (int i = 0; i < 5; i++) {
         spi_transfer_byte(ctx, tx[i], 0);
     }
     for (uint32_t i = 0; i < length; i++) {
         spi_transfer_byte(ctx, data[i], 0);
     }
-    spi_delay();
+    for (volatile int d = 0; d < 2000; d++) __asm__ volatile("nop");
     gpio_set(ctx->tlmm, PIN_CS, 1);
-    spi_delay();
+    for (volatile int d = 0; d < 2000; d++) __asm__ volatile("nop");
     return true;
 }
 
@@ -230,9 +230,9 @@ void marble_touch_entry(void) {
     ctx.pin_miso = PIN_MISO_DEFAULT;
     ctx.dummy_bytes = 4;
 
-    // Wait 12s for early boot and SpringBoard/backboardd stabilization
-    xnu_kprint("SWEET TOUCH: waiting 12s for early boot stabilization...\n");
-    for (int s = 0; s < 12; s++) {
+    // Wait 2s for early boot and SpringBoard/backboardd stabilization
+    xnu_kprint("SWEET TOUCH: waiting 2s for early boot stabilization...\n");
+    for (int s = 0; s < 2; s++) {
         delay(1000, 1000000);
     }
 
@@ -293,15 +293,22 @@ void marble_touch_entry(void) {
 
         for (int d = 3; d <= 4; d++) {
             ctx.dummy_bytes = d;
-            for (int i = 0; i < 32; i++) version[i] = 0;
-            if (goodix_read(&ctx, 0x10014, version, 28)) {
-                if ((version[0] >= '0' && version[0] <= '9') ||
-                    (version[0] >= 'A' && version[0] <= 'Z') ||
-                    (version[0] >= 'a' && version[0] <= 'z')) {
-                    xnu_kprint("SWEET TOUCH: Goodix GT9916R found! IC=%.6s FW=%.8s (mosi=%d miso=%d dummy=%d)\n",
-                               (const char *)version, (const char *)version + 10, ctx.pin_mosi, ctx.pin_miso, d);
-                    probed = true;
-                    break;
+            uint32_t addrs[2] = {0x10068, 0x10014};
+            for (int a = 0; a < 2 && !probed; a++) {
+                uint32_t addr = addrs[a];
+                for (int i = 0; i < 32; i++) version[i] = 0;
+                if (goodix_read(&ctx, addr, version, 28)) {
+                    xnu_kprint("SWEET TOUCH: probe mosi=%d miso=%d d=%d a=0x%05x -> %02x %02x %02x %02x\n",
+                               ctx.pin_mosi, ctx.pin_miso, d, addr,
+                               (uint32_t)version[0], (uint32_t)version[1], (uint32_t)version[2], (uint32_t)version[3]);
+                    if ((version[0] >= '0' && version[0] <= '9') ||
+                        (version[0] >= 'A' && version[0] <= 'Z') ||
+                        (version[0] >= 'a' && version[0] <= 'z')) {
+                        xnu_kprint("SWEET TOUCH: Goodix GT9916R found! IC=%.6s FW=%.8s (mosi=%d miso=%d dummy=%d)\n",
+                                   (const char *)version, (const char *)version + 10, ctx.pin_mosi, ctx.pin_miso, d);
+                        probed = true;
+                        break;
+                    }
                 }
             }
         }
