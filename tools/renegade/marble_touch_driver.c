@@ -314,14 +314,6 @@ void marble_touch_entry(void) {
 
         goodix_write(&ctx, touch_address, &zero, 1);
 
-        // Power button gesture: 3 or more fingers tap triggers power toggle (sleep/wake)
-        if (count >= 3) {
-            hid_key(0, 1);
-            delay(40, 1000000);
-            hid_key(0, 0);
-            kprint("SWEET TOUCH: 3-finger power toggle dispatched!\n");
-        }
-
         bool active[10];
         for (int i = 0; i < 10; i++) active[i] = false;
 
@@ -341,29 +333,6 @@ void marble_touch_entry(void) {
             uint32_t mapped_y = (raw_y * 2436) / 2400;
             if (mapped_x > 1125) mapped_x = 1125;
             if (mapped_y > 2436) mapped_y = 2436;
-
-            // Virtual button gestures:
-            // Top-right corner tap (x > 950 && y < 100): Power toggle (sleep/wake)
-            // Top-left corner tap (x < 120 && y < 100): Volume Up
-            // Bottom-left corner tap (x < 120 && y > 2300): Volume Down
-            if (count == 1 && !prev_contacts[id].down) {
-                if (raw_x > 950 && raw_y < 100) {
-                    hid_key(0, 1);
-                    delay(40, 1000000);
-                    hid_key(0, 0);
-                    kprint("SWEET TOUCH: top-right corner power toggle dispatched!\n");
-                } else if (raw_x < 120 && raw_y < 100) {
-                    hid_key(1, 1);
-                    delay(40, 1000000);
-                    hid_key(1, 0);
-                    kprint("SWEET TOUCH: top-left corner vol+ dispatched!\n");
-                } else if (raw_x < 120 && raw_y > 2300) {
-                    hid_key(2, 1);
-                    delay(40, 1000000);
-                    hid_key(2, 0);
-                    kprint("SWEET TOUCH: bottom-left corner vol- dispatched!\n");
-                }
-            }
 
             active[id] = true;
             prev_contacts[id].x = mapped_x;

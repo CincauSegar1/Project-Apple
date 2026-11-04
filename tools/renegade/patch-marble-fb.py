@@ -238,10 +238,8 @@ PATCHES = (
      bytes.fromhex('a1c1fff0'),
      bytes.fromhex('6751f117'),
      '_proc_prepareexit: branch to park loop on initproc exit attempt (never panic kernel, allow child tasks to exit normally)'),
-    (0x57cf28,
-     bytes.fromhex('ff4301d1f44f03a9fd7b04a9fd03019128008052'),
-     bytes.fromhex('ff4301d1f44f03a9fd7b04a9fd030191b6000014'),
-     '_sweet_touch_init: jump directly to thread start at 0x57d210 (bypass beryllium I2C/TLMM probe)'),
+    (0x57cf28, bytes.fromhex('ff4301d1'), bytes.fromhex('c0035fd6'),
+     '_sweet_touch_init: return immediately (do not touch beryllium GCC/TLMM 0x100000/0x3900000)'),
     (0xb46404, bytes.fromhex('ff8301d1f65703a9'), bytes.fromhex('00008052c0035fd6'),
      'AppleCLCD::blInit: return 0 immediately (prevent invalid PMIC SPMI read)'),
     (0xb46f94, bytes.fromhex('ff0302d1fa6703a9'), bytes.fromhex('c0035fd61f2003d5'),
@@ -406,14 +404,6 @@ def main():
             raise SystemExit(f'{src}: {off:#x}: expected {old.hex()}, got {got.hex()} ({what})')
         data[off:off + len(new)] = new
         print(f'{off:#x}: {what}')
-
-    # Inject native Marble Goodix hardware touch driver into _touch_thread (0x57d284)
-    touch_bin = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'marble_touch.bin')
-    if os.path.exists(touch_bin):
-        touch_code = open(touch_bin, 'rb').read()
-        touch_off = 0x57d284
-        data[touch_off:touch_off + len(touch_code)] = touch_code
-        print(f'{touch_off:#x}: injected native Marble Goodix hardware touch driver ({len(touch_code)} bytes)')
 
     open(dst, 'wb').write(data)
     print(f'wrote {dst} ({len(data)} bytes)')
