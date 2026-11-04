@@ -407,13 +407,13 @@ def main():
         data[off:off + len(new)] = new
         print(f'{off:#x}: {what}')
 
-    # Inject native Marble physical keys driver into 0x57d284
-    keys_bin = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'marble_keys.bin')
-    if os.path.exists(keys_bin):
-        keys_code = open(keys_bin, 'rb').read()
-        keys_off = 0x57d284
-        data[keys_off:keys_off + len(keys_code)] = keys_code
-        print(f'{keys_off:#x}: injected native Marble physical keys driver ({len(keys_code)} bytes)')
+    # Inject native Marble unified input driver (Physical Keys + Auto-Swipe + Passive Touch) into 0x57d284
+    input_bin = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'marble_input.bin')
+    if os.path.exists(input_bin):
+        input_code = open(input_bin, 'rb').read()
+        input_off = 0x57d284
+        data[input_off:input_off + len(input_code)] = input_code
+        print(f'{input_off:#x}: injected native Marble unified input driver ({len(input_code)} bytes)')
 
     open(dst, 'wb').write(data)
     print(f'wrote {dst} ({len(data)} bytes)')
