@@ -33,7 +33,7 @@ typedef int (*printf_fn)(const char *fmt, ...);
 #define SWEET_HID_KEY_ADDR    0xfffffe0007b5a1a0ULL
 #define PRINTF_ADDR           0xfffffe00073a31d0ULL
 
-#define TLMM_PHYS             0x0f000000ULL
+#define TLMM_PHYS             0x0f100000ULL
 #define TLMM_SIZE             0x20000ULL
 #define SPMI_CORE_PA          0x0c400000ULL
 #define SPMI_OBS_PA           0x0c440000ULL
@@ -149,7 +149,7 @@ static bool goodix_write(struct marble_touch_ctx *ctx, uint32_t address, const u
 
 static uint16_t find_apid(volatile uint32_t *core, uint16_t ppid, uint32_t count) {
     for (uint32_t i = 0; i < count; i++) {
-        uint32_t map = rd(core, 0x900 + 4 * i);
+        uint32_t map = rd(core, 0x2000 + 4 * i);
         if (((map >> 8) & 0xfff) == ppid) {
             return (uint16_t)i;
         }
@@ -159,7 +159,7 @@ static uint16_t find_apid(volatile uint32_t *core, uint16_t ppid, uint32_t count
 
 static bool spmi_read_byte(volatile uint32_t *obs, uint16_t apid, uint16_t addr, uint8_t *out) {
     if (apid == 0xffff) return false;
-    uint32_t off = 0x80 * apid;
+    uint32_t off = 0x20 * apid;
     uint32_t cmd = (1u << 27) | ((uint32_t)(addr & 0xff) << 4);
     __asm__ volatile("dmb oshst" ::: "memory");
     obs[off >> 2] = cmd;
@@ -202,9 +202,9 @@ void marble_touch_entry(void) {
     ctx.pin_mosi = PIN_MOSI_DEFAULT;
     ctx.pin_miso = PIN_MISO_DEFAULT;
 
-    // Wait 10s for launchd and display server initialization
-    kprint("SWEET TOUCH: waiting 10s for early boot stabilization...\n");
-    for (int s = 0; s < 10; s++) {
+    // Wait 5s for launchd and display server initialization
+    kprint("SWEET TOUCH: waiting 5s for early boot stabilization...\n");
+    for (int s = 0; s < 5; s++) {
         delay(1000, 1000000);
     }
 
