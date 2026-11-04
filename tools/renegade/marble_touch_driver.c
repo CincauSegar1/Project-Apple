@@ -255,12 +255,10 @@ void marble_touch_entry(void) {
         while (1) delay(1000, 1000000);
     }
 
-    // Pulse GPIO 20 (Reset) to ensure clean Goodix firmware boot
-    gpio_cfg(ctx.tlmm, PIN_RST, 0, 0, 6, true);
-    gpio_set(ctx.tlmm, PIN_RST, 0);
-    delay(5, 1000000);
+    // Hold GPIO 20 (Reset) HIGH to preserve firmware loaded by ABL
+    gpio_cfg(ctx.tlmm, PIN_RST, 0, 3, 8, true);
     gpio_set(ctx.tlmm, PIN_RST, 1);
-    delay(60, 1000000);
+    delay(10, 1000000);
 
     // Configure SPI pins: CLK, CS, INT
     gpio_cfg(ctx.tlmm, PIN_CLK, 0, 0, 6, true);
@@ -284,7 +282,7 @@ void marble_touch_entry(void) {
             ctx.pin_miso = 16;
         }
         gpio_cfg(ctx.tlmm, ctx.pin_mosi, 0, 0, 6, true);
-        gpio_cfg(ctx.tlmm, ctx.pin_miso, 0, 3, 6, false);
+        gpio_cfg(ctx.tlmm, ctx.pin_miso, 0, 0, 6, false);
         gpio_set(ctx.tlmm, ctx.pin_mosi, 0);
 
         // Send SPI mode select command
@@ -320,7 +318,7 @@ void marble_touch_entry(void) {
         ctx.pin_miso = 17;
         ctx.dummy_bytes = 4;
         gpio_cfg(ctx.tlmm, 16, 0, 0, 6, true);
-        gpio_cfg(ctx.tlmm, 17, 0, 3, 6, false);
+        gpio_cfg(ctx.tlmm, 17, 0, 0, 6, false);
         goodix_write(&ctx, 0xc900, &spi_mode, 1);
     }
 
@@ -406,13 +404,7 @@ void marble_touch_entry(void) {
             }
         }
 
-        // Touch Screen Polling: GPIO 21 goes LOW when screen touched
-        bool irq_active = !gpio_get(ctx.tlmm, PIN_INT);
-        if (!irq_active && (idle_ticks < 10)) {
-            continue;
-        }
-        idle_ticks = 0;
-
+        // Touch Screen Polling: read touch report every tick (125 Hz)
         if (!goodix_read(&ctx, touch_address, report, 8)) {
             continue;
         }
