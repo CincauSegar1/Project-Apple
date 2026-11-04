@@ -6,7 +6,7 @@
  *    - GPIO 17: MISO
  *    - GPIO 18: CLK
  *    - GPIO 19: CS (Active Low)
- *    - GPIO 20: RESET (Kept HIGH by ABL; NEVER touched)
+ *    - GPIO 20: RESET (Pulsed on startup, then held HIGH)
  *    - GPIO 21: IRQ / INT (Falling edge / Low on contact)
  *
  * 2. Native Physical Buttons: PMIC SPMI Observer (0x0c440000)
@@ -25,7 +25,6 @@ typedef void *(*ml_io_map_fn)(uint64_t phys_addr, uint64_t size);
 typedef void (*delay_fn)(uint32_t interval, uint32_t unit_in_ns);
 typedef void (*sweet_hid_touch_fn)(int finger, int down, int x, int y);
 typedef void (*sweet_hid_key_fn)(int key, int down);
-typedef int (*printf_fn)(const char *fmt, ...);
 
 #define ML_IO_MAP_ADDR        0xfffffe00075236ccULL
 #define DELAY_ADDR            0xfffffe00073742a4ULL
@@ -42,14 +41,38 @@ typedef int (*printf_fn)(const char *fmt, ...);
 #define PIN_MISO_DEFAULT      17
 #define PIN_CLK               18
 #define PIN_CS                19
+#define PIN_RST               20
 #define PIN_INT               21
 
 #define GOODIX_STATUS_TOUCH   0x80
+
+/*
+ * XNU uses Darwin ARM64 ABI where variadic arguments are read from the caller's stack frame.
+ * This naked wrapper stores x1-x7 to [sp] before jumping to XNU _printf so format strings work.
+ */
+__attribute__((naked))
+static void xnu_kprint(const char *fmt, ...) {
+    __asm__ volatile(
+        "sub sp, sp, #64\n"
+        "stp x1, x2, [sp]\n"
+        "stp x3, x4, [sp, #16]\n"
+        "stp x5, x6, [sp, #32]\n"
+        "stp x7, x30, [sp, #48]\n"
+        "mov x8, #0x31d0\n"
+        "movk x8, #0x73a, lsl #16\n"
+        "movk x8, #0xfe00, lsl #32\n"
+        "blr x8\n"
+        "ldr x30, [sp, #56]\n"
+        "add sp, sp, #64\n"
+        "ret\n"
+    );
+}
 
 struct marble_touch_ctx {
     volatile uint32_t *tlmm;
     int pin_miso;
     int pin_mosi;
+    int dummy_bytes;
 };
 
 static inline void wr(volatile uint32_t *tlmm, uint32_t reg, uint32_t val) {
@@ -103,17 +126,21 @@ static void spi_transfer_byte(struct marble_touch_ctx *ctx, uint8_t out, uint8_t
 }
 
 static bool goodix_read(struct marble_touch_ctx *ctx, uint32_t address, uint8_t *data, uint32_t length) {
-    uint8_t tx[8];
+    uint8_t tx[12];
     tx[0] = 0xf1;
     tx[1] = (uint8_t)(address >> 24);
     tx[2] = (uint8_t)(address >> 16);
     tx[3] = (uint8_t)(address >> 8);
     tx[4] = (uint8_t)address;
-    tx[5] = 0xff; tx[6] = 0xff; tx[7] = 0xff;
+    int dummy = (ctx->dummy_bytes > 0) ? ctx->dummy_bytes : 3;
+    for (int i = 0; i < dummy; i++) {
+        tx[5 + i] = 0xff;
+    }
+    int hdr_len = 5 + dummy;
 
     gpio_set(ctx->tlmm, PIN_CS, 0);
     spi_delay();
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < hdr_len; i++) {
         spi_transfer_byte(ctx, tx[i], 0);
     }
     for (uint32_t i = 0; i < length; i++) {
@@ -196,15 +223,15 @@ void marble_touch_entry(void) {
     delay_fn delay = (delay_fn)DELAY_ADDR;
     sweet_hid_touch_fn hid_touch = (sweet_hid_touch_fn)SWEET_HID_TOUCH_ADDR;
     sweet_hid_key_fn hid_key = (sweet_hid_key_fn)SWEET_HID_KEY_ADDR;
-    printf_fn kprint = (printf_fn)PRINTF_ADDR;
 
     struct marble_touch_ctx ctx;
     ctx.pin_mosi = PIN_MOSI_DEFAULT;
     ctx.pin_miso = PIN_MISO_DEFAULT;
+    ctx.dummy_bytes = 4;
 
-    // Wait 5s for launchd and display server initialization
-    kprint("SWEET TOUCH: waiting 5s for early boot stabilization...\n");
-    for (int s = 0; s < 5; s++) {
+    // Wait 12s for early boot and SpringBoard/backboardd stabilization
+    xnu_kprint("SWEET TOUCH: waiting 12s for early boot stabilization...\n");
+    for (int s = 0; s < 12; s++) {
         delay(1000, 1000000);
     }
 
@@ -216,67 +243,87 @@ void marble_touch_entry(void) {
     if (spmi_core && spmi_obs) {
         apid_pon = find_apid(spmi_core, 0x008, 768);
         apid_volup = find_apid(spmi_core, 0x0c5, 768);
-        kprint("SWEET KEYS: Physical buttons ready (PON APID=%u, VolUp APID=%u)\n", apid_pon, apid_volup);
+        xnu_kprint("SWEET KEYS: Physical buttons ready (PON APID=%u, VolUp APID=%u)\n", (uint32_t)apid_pon, (uint32_t)apid_volup);
     }
 
     // Map Cape TLMM for Goodix GT9916R SPI Touchscreen
-    kprint("SWEET TOUCH: initializing Marble Goodix GT9916R on Cape SPI (TLMM 0x%08llx)...\n", TLMM_PHYS);
+    xnu_kprint("SWEET TOUCH: initializing Marble Goodix GT9916R on Cape SPI (TLMM 0x%08x)...\n", (uint32_t)TLMM_PHYS);
     ctx.tlmm = (volatile uint32_t *)ml_io_map(TLMM_PHYS, TLMM_SIZE);
     if (!ctx.tlmm) {
-        kprint("SWEET TOUCH: failed to map Cape TLMM!\n");
+        xnu_kprint("SWEET TOUCH: failed to map Cape TLMM!\n");
         while (1) delay(1000, 1000000);
     }
 
-    // Configure GPIO pins for Cape SPI SE4 + Goodix TS (NEVER touch GPIO 20 RESET)
-    gpio_cfg(ctx.tlmm, ctx.pin_mosi, 0, 0, 6, true);
-    gpio_cfg(ctx.tlmm, ctx.pin_miso, 0, 3, 6, false);
-    gpio_cfg(ctx.tlmm, PIN_CLK, 0, 0, 6, true);
-    gpio_cfg(ctx.tlmm, PIN_CS, 0, 3, 16, true);
-    gpio_cfg(ctx.tlmm, PIN_INT, 0, 3, 8, false);
+    // Pulse GPIO 20 (Reset) to ensure clean Goodix firmware boot
+    gpio_cfg(ctx.tlmm, PIN_RST, 0, 0, 6, true);
+    gpio_set(ctx.tlmm, PIN_RST, 0);
+    delay(5, 1000000);
+    gpio_set(ctx.tlmm, PIN_RST, 1);
+    delay(60, 1000000);
 
+    // Configure SPI pins: CLK, CS, INT
+    gpio_cfg(ctx.tlmm, PIN_CLK, 0, 0, 6, true);
+    gpio_cfg(ctx.tlmm, PIN_CS, 0, 3, 6, true);
+    gpio_cfg(ctx.tlmm, PIN_INT, 0, 3, 6, false);
     gpio_set(ctx.tlmm, PIN_CS, 1);
     gpio_set(ctx.tlmm, PIN_CLK, 0);
-    gpio_set(ctx.tlmm, ctx.pin_mosi, 0);
 
-    delay(50, 1000000);
-
-    uint8_t version[28];
+    // Adaptive probe: test both pin assignments (16=MOSI/17=MISO or 17=MOSI/16=MISO)
+    // and both dummy-byte lengths (3 and 4 bytes)
+    uint8_t version[32];
     bool probed = false;
-    for (int attempt = 0; attempt < 2; attempt++) {
-        if (attempt == 0) {
+    uint8_t spi_mode = 1;
+
+    for (int pin_cfg = 0; pin_cfg < 2 && !probed; pin_cfg++) {
+        if (pin_cfg == 0) {
             ctx.pin_mosi = 16;
             ctx.pin_miso = 17;
-            gpio_cfg(ctx.tlmm, 16, 0, 0, 6, true);
-            gpio_cfg(ctx.tlmm, 17, 0, 3, 6, false);
         } else {
             ctx.pin_mosi = 17;
             ctx.pin_miso = 16;
-            gpio_cfg(ctx.tlmm, 17, 0, 0, 6, true);
-            gpio_cfg(ctx.tlmm, 16, 0, 3, 6, false);
         }
-        if (goodix_read(&ctx, 0x10014, version, 28) && version[0] != 0 && version[0] != 0xff) {
-            kprint("SWEET TOUCH: Goodix GT9916R found! IC=%.6s FW=%.8s (mosi=%d miso=%d)\n",
-                   (const char *)version, (const char *)version + 10, ctx.pin_mosi, ctx.pin_miso);
-            probed = true;
-            break;
+        gpio_cfg(ctx.tlmm, ctx.pin_mosi, 0, 0, 6, true);
+        gpio_cfg(ctx.tlmm, ctx.pin_miso, 0, 3, 6, false);
+        gpio_set(ctx.tlmm, ctx.pin_mosi, 0);
+
+        // Send SPI mode select command
+        goodix_write(&ctx, 0xc900, &spi_mode, 1);
+        delay(5, 1000000);
+
+        for (int d = 3; d <= 4; d++) {
+            ctx.dummy_bytes = d;
+            for (int i = 0; i < 32; i++) version[i] = 0;
+            if (goodix_read(&ctx, 0x10014, version, 28)) {
+                if ((version[0] >= '0' && version[0] <= '9') ||
+                    (version[0] >= 'A' && version[0] <= 'Z') ||
+                    (version[0] >= 'a' && version[0] <= 'z')) {
+                    xnu_kprint("SWEET TOUCH: Goodix GT9916R found! IC=%.6s FW=%.8s (mosi=%d miso=%d dummy=%d)\n",
+                               (const char *)version, (const char *)version + 10, ctx.pin_mosi, ctx.pin_miso, d);
+                    probed = true;
+                    break;
+                }
+            }
         }
     }
 
     if (!probed) {
-        kprint("SWEET TOUCH: Goodix GT9916R fallback to default pinout (mosi=16 miso=17)\n");
+        xnu_kprint("SWEET TOUCH: fallback to default pinout (mosi=16 miso=17 dummy=4)\n");
         ctx.pin_mosi = 16;
         ctx.pin_miso = 17;
+        ctx.dummy_bytes = 4;
         gpio_cfg(ctx.tlmm, 16, 0, 0, 6, true);
         gpio_cfg(ctx.tlmm, 17, 0, 3, 6, false);
+        goodix_write(&ctx, 0xc900, &spi_mode, 1);
     }
 
     uint32_t touch_address = 0x10200;
+    uint32_t cfg_addr = (ctx.dummy_bytes == 4) ? 0x10068 : 0x10070;
     uint8_t info_hdr[2];
-    if (goodix_read(&ctx, 0x10070, info_hdr, 2)) {
+    if (goodix_read(&ctx, cfg_addr, info_hdr, 2)) {
         uint16_t info_len = le16(info_hdr);
         if (info_len > 40 && info_len < 512) {
             uint8_t info[256];
-            if (goodix_read(&ctx, 0x10070, info, sizeof(info))) {
+            if (goodix_read(&ctx, cfg_addr, info, sizeof(info))) {
                 uint32_t offset = 2 + 16 + 10 + 4;
                 for (int i = 0; i < 5 && offset < sizeof(info); i++) {
                     offset += 1 + 2 * info[offset];
@@ -293,7 +340,7 @@ void marble_touch_entry(void) {
     if (touch_address == 0 || touch_address < 0x10000 || touch_address > 0x80000) {
         touch_address = 0x10200;
     }
-    kprint("SWEET TOUCH: report address 0x%05x\n", touch_address);
+    xnu_kprint("SWEET TOUCH: report address 0x%05x\n", touch_address);
 
     struct contact_state prev_contacts[10];
     for (int i = 0; i < 10; i++) {
@@ -307,34 +354,38 @@ void marble_touch_entry(void) {
     uint32_t report_count = 0;
     uint32_t idle_ticks = 0;
     uint32_t key_ticks = 0;
+    uint32_t spmi_err_count = 0;
     bool pwr_down = false;
     bool vdn_down = false;
     bool vup_down = false;
 
-    kprint("SWEET TOUCH: Marble Goodix native hardware polling active (125 Hz). Touch & Physical Keys ON!\n");
+    xnu_kprint("SWEET TOUCH: Marble Goodix native hardware polling active (125 Hz). Touch & Physical Keys ON!\n");
 
     while (1) {
         delay(8, 1000000); // 8ms sleep = 125 Hz
         idle_ticks++;
         key_ticks++;
 
-        // Physical Buttons Polling (every 24ms = 3 ticks)
-        if (spmi_obs && key_ticks >= 3) {
+        // Physical Buttons Polling (every 64ms = 8 ticks)
+        if (spmi_obs && spmi_err_count < 5 && key_ticks >= 8) {
             key_ticks = 0;
             uint8_t pon = 0;
-            if (spmi_read_byte(spmi_obs, apid_pon, 0x0810, &pon)) {
+            if (apid_pon != 0xffff && spmi_read_byte(spmi_obs, apid_pon, 0x0810, &pon)) {
+                spmi_err_count = 0;
                 bool pwr = (pon & 1) != 0;
                 bool vdn = (pon & 2) != 0;
                 if (pwr != pwr_down) {
                     pwr_down = pwr;
                     hid_key(0, pwr ? 1 : 0);
-                    kprint("SWEET KEYS: Physical Power %s\n", pwr ? "PRESSED" : "RELEASED");
+                    xnu_kprint("SWEET KEYS: Physical Power %s\n", pwr ? "PRESSED" : "RELEASED");
                 }
                 if (vdn != vdn_down) {
                     vdn_down = vdn;
                     hid_key(2, vdn ? 1 : 0);
-                    kprint("SWEET KEYS: Physical Vol- %s\n", vdn ? "PRESSED" : "RELEASED");
+                    xnu_kprint("SWEET KEYS: Physical Vol- %s\n", vdn ? "PRESSED" : "RELEASED");
                 }
+            } else if (apid_pon != 0xffff) {
+                spmi_err_count++;
             }
             uint8_t gpio = 0;
             if (apid_volup != 0xffff && spmi_read_byte(spmi_obs, apid_volup, 0xc510, &gpio)) {
@@ -342,12 +393,12 @@ void marble_touch_entry(void) {
                 if (vup != vup_down) {
                     vup_down = vup;
                     hid_key(1, vup ? 1 : 0);
-                    kprint("SWEET KEYS: Physical Vol+ %s\n", vup ? "PRESSED" : "RELEASED");
+                    xnu_kprint("SWEET KEYS: Physical Vol+ %s\n", vup ? "PRESSED" : "RELEASED");
                 }
             }
         }
 
-        // Touch Screen Polling
+        // Touch Screen Polling: GPIO 21 goes LOW when screen touched
         bool irq_active = !gpio_get(ctx.tlmm, PIN_INT);
         if (!irq_active && (idle_ticks < 10)) {
             continue;
@@ -387,6 +438,7 @@ void marble_touch_entry(void) {
         for (uint8_t i = 0; i < count; i++) {
             const uint8_t *pt = report + 8 + i * 8;
             uint8_t id = pt[0] >> 4;
+            if (id >= 10) id = pt[0] & 0x0f;
             if (id >= 10) continue;
 
             uint32_t raw_x = le16(pt + 2);
@@ -408,8 +460,8 @@ void marble_touch_entry(void) {
             hid_touch((int)id, 1, (int)mapped_x, (int)mapped_y);
 
             if (report_count < 10) {
-                kprint("SWEET TOUCH: contact %u down at %u,%u (raw %u,%u)\n",
-                       id, mapped_x, mapped_y, raw_x, raw_y);
+                xnu_kprint("SWEET TOUCH: contact %u down at %u,%u (raw %u,%u)\n",
+                           (uint32_t)id, mapped_x, mapped_y, raw_x, raw_y);
             }
         }
 
@@ -418,7 +470,7 @@ void marble_touch_entry(void) {
                 prev_contacts[i].down = false;
                 hid_touch(i, 0, prev_contacts[i].x, prev_contacts[i].y);
                 if (report_count < 10) {
-                    kprint("SWEET TOUCH: contact %u up\n", i);
+                    xnu_kprint("SWEET TOUCH: contact %u up\n", (uint32_t)i);
                 }
             }
         }

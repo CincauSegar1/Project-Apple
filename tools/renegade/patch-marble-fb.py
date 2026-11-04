@@ -158,7 +158,7 @@ PATCHES = (
      '_sweet_early_mark: return immediately (eliminate bottom debug color blocks)'),
     (0x511920,
      bytes.fromhex('ffc301d1fc6f01a9fa6702a9f85f03a9f65704a9f44f05a9fd7b06a9fd830191f40300aae04100b008a07839a81c0037e24100d048d050391f050071e10700f91f2003d5083a009008694fb909810071a3020054'),
-     bytes.fromhex('fd7bbfa992a6f997880240b9498c8d52a9aeac721f01096b61010054290c8e52090eae721f01096be100005449ae8c52098ead721f01096b61000054fd7bc1a8c0035fd6004099524073a772887af997fdffff17'),
+     bytes.fromhex('fd7bbfa992a6f997880240b9498c8d52a9aeac721f01096b60010054290c8e52090eae721f01096be000005449ae8c52098ead721f01096b60000054fd7bc1a8c0035fd6004099524073a772887af997fdffff17'),
      'dead code at _sweet_early_mark+8: bluetoothd/appprotectiond/replicatord crash quiesce trampoline (sleep on fatal signal)'),
     (0x8c5374, bytes.fromhex('fed7ea97'), bytes.fromhex('6b31f197'),
      '_proc_prepareexit: redirect bl _sweet_crash_log to bluetoothd quiesce trampoline'),
