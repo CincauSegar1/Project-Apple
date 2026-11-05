@@ -343,7 +343,7 @@ void marble_touch_entry(void) {
         goodix_write(&ctx, 0xc900, &spi_mode, 1);
     }
 
-    uint32_t touch_address = 0x13400; // Real Goodix Berlin D event address from params_brd
+    uint32_t touch_address = 0x13400;
     uint32_t cfg_addr = (ctx.dummy_bytes == 4) ? 0x10068 : 0x10070;
     uint8_t info_hdr[2];
     if (goodix_read(&ctx, cfg_addr, info_hdr, 2)) {
@@ -381,11 +381,17 @@ void marble_touch_entry(void) {
     uint32_t report_count = 0;
     uint32_t idle_ticks = 0;
     uint32_t key_ticks = 0;
+    uint32_t alt_ticks = 0;
     uint32_t spmi_err_count = 0;
     bool pwr_down = false;
     bool vdn_down = false;
     bool vup_down = false;
     bool int_last = true;
+
+    // Send wake-up Power button press to wake up SpringBoard and display
+    hid_key(0, 1);
+    delay(50, 1000000);
+    hid_key(0, 0);
 
     xnu_kprint("SWEET TOUCH: Marble Goodix native hardware polling active (125 Hz). Touch & Physical Keys ON!\n");
 
@@ -393,6 +399,7 @@ void marble_touch_entry(void) {
         delay(8, 1000000); // 8ms sleep = 125 Hz
         idle_ticks++;
         key_ticks++;
+        alt_ticks++;
 
         // Physical Buttons Polling (every 64ms = 8 ticks)
         if (spmi_obs && spmi_err_count < 5 && key_ticks >= 8) {
@@ -445,9 +452,18 @@ void marble_touch_entry(void) {
                        (uint32_t)report[0], (uint32_t)report[1], (uint32_t)report[2], (uint32_t)report[3],
                        (uint32_t)report[4], (uint32_t)report[5], (uint32_t)report[6], (uint32_t)report[7]);
         }
-        if (status == 0 || status == 0xff || !(status & 0x60)) {
+
+        // If inactive or invalid status:
+        if (status == 0 || status == 0xff || !(status & 0xf0)) {
             if (status != 0 && status != 0xff) {
                 goodix_write(&ctx, touch_address, &zero, 1);
+            }
+            // If no activity on current address for 250 ticks (~2 sec), cycle through known Goodix addresses
+            if (status == 0 && alt_ticks > 250) {
+                alt_ticks = 0;
+                if (touch_address == 0x13400) touch_address = 0x10400;
+                else if (touch_address == 0x10400) touch_address = 0x10008;
+                else touch_address = 0x13400;
             }
             for (int i = 0; i < 10; i++) {
                 if (prev_contacts[i].down) {
@@ -458,8 +474,11 @@ void marble_touch_entry(void) {
             continue;
         }
 
+        // Active touch event detected! Lock onto this address:
+        alt_ticks = 0;
         uint8_t count = report[2] & 0x0f;
         if (count > 10) count = 10;
+        if (count == 0) count = 1;
 
         if (count > 0) {
             goodix_read(&ctx, touch_address + 8, report + 8, count * 8);
