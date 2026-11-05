@@ -392,6 +392,16 @@ PATCHES = (
     # 4. In SweetAdrenoPublish, remove check for a630_kept so service publishes:
     (0xb4db54, bytes.fromhex('c00d0034'), bytes.fromhex('1f2003d5'),
      'sweetadreno: SweetAdrenoPublish nop cbz w0 (always register IOKit service)'),
+
+    # ---- kern.bootsessionuuid fix for bgl-launch guard() ------------------
+    # supply valid UUID string to sysctl_get_bootsessionuuid so sysctlbyname("kern.bootsessionuuid")
+    # succeeds and returns a valid UUID, allowing bgl-launch guard() to inject the GL/softpipe shim into backboardd!
+    (0x964998,
+     bytes.fromhex('e00300913db6ee971f18007188010054e803002a89b6ffb029e930918a0000102b6968384a090b8b40011fd6c00280520c000014a00580520a0000146002805208000014'),
+     bytes.fromhex('410000101000001431373033423731422d333932442d334645312d413643352d343541423334444439314246000000000000000000000000000000000000000000000000'),
+     'sysctl_get_bootsessionuuid: supply fixed UUID string to unblock bgl-launch guard()'),
+    (0x9649e0, bytes.fromhex('e1030091'), bytes.fromhex('1f2003d5'),
+     'sysctl_get_bootsessionuuid: nop mov x1, sp to preserve UUID string pointer'),
 )
 
 
