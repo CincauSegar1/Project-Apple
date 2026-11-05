@@ -44,7 +44,7 @@ typedef void (*sweet_hid_key_fn)(int key, int down);
 #define PIN_RST               20
 #define PIN_INT               21
 
-#define GOODIX_STATUS_TOUCH   0x80
+#define GOODIX_STATUS_TOUCH   0x60
 
 /*
  * XNU uses Darwin ARM64 ABI where variadic arguments are read from the caller's stack frame.
@@ -145,7 +145,7 @@ static bool goodix_read(struct marble_touch_ctx *ctx, uint32_t address, uint8_t 
         spi_transfer_byte(ctx, tx[i], 0);
     }
     for (uint32_t i = 0; i < length; i++) {
-        spi_transfer_byte(ctx, 0x00, &data[i]);
+        spi_transfer_byte(ctx, 0xff, &data[i]);
     }
     for (volatile int d = 0; d < 2000; d++) __asm__ volatile("nop");
     gpio_set(ctx->tlmm, PIN_CS, 1);
@@ -261,32 +261,11 @@ void marble_touch_entry(void) {
     delay(10, 1000000);
 
     // Configure SPI pins: CLK, CS, INT
-    xnu_kprint("SWEET TOUCH: ABL TLMM: 16=0x%x 17=0x%x 18=0x%x 19=0x%x 20=0x%x 21=0x%x\n",
-               rd(ctx.tlmm, GPIO_CFG(16)), rd(ctx.tlmm, GPIO_CFG(17)),
-               rd(ctx.tlmm, GPIO_CFG(18)), rd(ctx.tlmm, GPIO_CFG(19)),
-               rd(ctx.tlmm, GPIO_CFG(20)), rd(ctx.tlmm, GPIO_CFG(21)));
-
     gpio_cfg(ctx.tlmm, PIN_CLK, 0, 0, 6, true);
     gpio_cfg(ctx.tlmm, PIN_CS, 0, 3, 6, true);
     gpio_cfg(ctx.tlmm, PIN_INT, 0, 3, 6, false);
     gpio_set(ctx.tlmm, PIN_CS, 1);
     gpio_set(ctx.tlmm, PIN_CLK, 0);
-
-    gpio_set(ctx.tlmm, 16, 1);
-    bool m16_hi = gpio_get(ctx.tlmm, 16);
-    gpio_set(ctx.tlmm, 16, 0);
-    bool m16_lo = gpio_get(ctx.tlmm, 16);
-    gpio_set(ctx.tlmm, 18, 1);
-    bool c18_hi = gpio_get(ctx.tlmm, 18);
-    gpio_set(ctx.tlmm, 18, 0);
-    bool c18_lo = gpio_get(ctx.tlmm, 18);
-    gpio_set(ctx.tlmm, 19, 1);
-    bool cs_hi = gpio_get(ctx.tlmm, 19);
-    gpio_set(ctx.tlmm, 19, 0);
-    bool cs_lo = gpio_get(ctx.tlmm, 19);
-    xnu_kprint("SWEET TOUCH: pin test: 16=(%d,%d) 18=(%d,%d) 19=(%d,%d) INT=%d\n",
-               m16_hi?1:0, m16_lo?1:0, c18_hi?1:0, c18_lo?1:0, cs_hi?1:0, cs_lo?1:0,
-               gpio_get(ctx.tlmm, PIN_INT) ? 1 : 0);
 
     // Adaptive probe: test both pin assignments (16=MOSI/17=MISO or 17=MOSI/16=MISO)
     // and both dummy-byte lengths (3 and 4 bytes)
@@ -343,7 +322,7 @@ void marble_touch_entry(void) {
         goodix_write(&ctx, 0xc900, &spi_mode, 1);
     }
 
-    uint32_t touch_address = 0x13400;
+    uint32_t touch_address = 0x13400; // Goodix Berlin D event address from params_brd
     uint32_t cfg_addr = (ctx.dummy_bytes == 4) ? 0x10068 : 0x10070;
     uint8_t info_hdr[2];
     if (goodix_read(&ctx, cfg_addr, info_hdr, 2)) {
@@ -381,28 +360,20 @@ void marble_touch_entry(void) {
     uint32_t report_count = 0;
     uint32_t idle_ticks = 0;
     uint32_t key_ticks = 0;
-    uint32_t alt_ticks = 0;
     uint32_t spmi_err_count = 0;
     bool pwr_down = false;
     bool vdn_down = false;
     bool vup_down = false;
-    bool int_last = true;
 
-    // Send wake-up Power button press to wake up SpringBoard and display
-    hid_key(0, 1);
-    delay(50, 1000000);
-    hid_key(0, 0);
-
-    xnu_kprint("SWEET TOUCH: Marble Goodix native hardware polling active (125 Hz). Touch & Physical Keys ON!\n");
+    xnu_kprint("SWEET TOUCH: Marble Goodix native hardware polling active (60 Hz). Touch & Physical Keys ON!\n");
 
     while (1) {
-        delay(8, 1000000); // 8ms sleep = 125 Hz
+        delay(16, 1000000); // 16ms sleep = 60 Hz (matches panel refresh, saves CPU)
         idle_ticks++;
         key_ticks++;
-        alt_ticks++;
 
-        // Physical Buttons Polling (every 64ms = 8 ticks)
-        if (spmi_obs && spmi_err_count < 5 && key_ticks >= 8) {
+        // Physical Buttons Polling (every 64ms = 4 ticks)
+        if (spmi_obs && spmi_err_count < 5 && key_ticks >= 4) {
             key_ticks = 0;
             uint8_t pon = 0;
             if (apid_pon != 0xffff && spmi_read_byte(spmi_obs, apid_pon, 0x0810, &pon)) {
@@ -433,37 +404,15 @@ void marble_touch_entry(void) {
             }
         }
 
-        // Monitor INT pin (GPIO 21)
-        bool int_now = gpio_get(ctx.tlmm, PIN_INT);
-        if (int_now != int_last) {
-            int_last = int_now;
-            xnu_kprint("SWEET TOUCH: INT level -> %d\n", int_now ? 1 : 0);
-        }
-
         // Touch Screen Polling: read touch report every tick (125 Hz)
         if (!goodix_read(&ctx, touch_address, report, 8)) {
             continue;
         }
 
         uint8_t status = report[0];
-        if (status != 0 && status != 0xff && report_count < 20) {
-            report_count++;
-            xnu_kprint("SWEET TOUCH: raw report: %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                       (uint32_t)report[0], (uint32_t)report[1], (uint32_t)report[2], (uint32_t)report[3],
-                       (uint32_t)report[4], (uint32_t)report[5], (uint32_t)report[6], (uint32_t)report[7]);
-        }
-
-        // If inactive or invalid status:
-        if (status == 0 || status == 0xff || !(status & 0xf0)) {
-            if (status != 0 && status != 0xff) {
+        if (status == 0 || status == 0xff || !(status & GOODIX_STATUS_TOUCH)) {
+            if (status & GOODIX_STATUS_TOUCH) {
                 goodix_write(&ctx, touch_address, &zero, 1);
-            }
-            // If no activity on current address for 250 ticks (~2 sec), cycle through known Goodix addresses
-            if (status == 0 && alt_ticks > 250) {
-                alt_ticks = 0;
-                if (touch_address == 0x13400) touch_address = 0x10400;
-                else if (touch_address == 0x10400) touch_address = 0x10008;
-                else touch_address = 0x13400;
             }
             for (int i = 0; i < 10; i++) {
                 if (prev_contacts[i].down) {
@@ -474,11 +423,8 @@ void marble_touch_entry(void) {
             continue;
         }
 
-        // Active touch event detected! Lock onto this address:
-        alt_ticks = 0;
         uint8_t count = report[2] & 0x0f;
         if (count > 10) count = 10;
-        if (count == 0) count = 1;
 
         if (count > 0) {
             goodix_read(&ctx, touch_address + 8, report + 8, count * 8);
