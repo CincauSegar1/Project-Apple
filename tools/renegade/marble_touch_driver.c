@@ -185,16 +185,6 @@ static uint16_t find_apid(volatile uint32_t *core, uint16_t ppid, uint32_t count
     return 0xffff;
 }
 
-static uint16_t find_apid_usid(volatile uint32_t *core, uint16_t usid, uint16_t pid, uint32_t count) {
-    for (uint32_t i = 0; i < count; i++) {
-        uint32_t map = rd(core, 0x2000 + 4 * i);
-        if ((map & 0xff) == usid && ((map >> 8) & 0xfff) == pid) {
-            return (uint16_t)i;
-        }
-    }
-    return 0xffff;
-}
-
 static bool spmi_read_byte(volatile uint32_t *obs, uint16_t apid, uint16_t addr, uint8_t *out) {
     if (apid == 0xffff) return false;
     uint32_t off = 0x20 * apid;
@@ -309,82 +299,81 @@ void marble_touch_entry(void) {
     for (volatile int d = 0; d < 500; d++) __asm__ volatile("nop");
     uint32_t io_cs_lo = rd(ctx.tlmm, GPIO_IO(19));
     gpio_set(ctx.tlmm, PIN_CS, 1);
-    xnu_kprint("SWEET TOUCH: io MOSI=(0x%x,0x%x) CLK=(0x%x,0x%x) CS=(0x%x,0x%x) INT=%d MISO=%d\n",
-               io_mo_hi, io_mo_lo, io_ck_hi, io_ck_lo, io_cs_hi, io_cs_lo,
+    xnu_kprint("SWEET TOUCH: io MOSI=(%d,%d) CLK=(%d,%d)\n",
+               (io_mo_hi & 1), (io_mo_lo & 1), (io_ck_hi & 1), (io_ck_lo & 1));
+    xnu_kprint("SWEET TOUCH: io CS=(%d,%d) INT=%d MISO=%d\n",
+               (io_cs_hi & 1), (io_cs_lo & 1),
                gpio_get(ctx.tlmm, PIN_INT) ? 1 : 0, gpio_get(ctx.tlmm, 17) ? 1 : 0);
 
-    // PM8350C regulator check: L2C = IOVDD (PID 0x41), L9C = AVDD (PID 0x48), USID 2
+    // PM8350C regulator check: L2C = IOVDD (PPID 0x241), L9C = AVDD (PPID 0x248)
     if (spmi_core && spmi_obs) {
-        uint16_t a_l2 = find_apid_usid(spmi_core, 2, 0x41, 768);
-        uint16_t a_l9 = find_apid_usid(spmi_core, 2, 0x48, 768);
-        uint8_t v40, v45, v46, v47;
-        if (a_l2 != 0xffff &&
-            spmi_read_byte(spmi_obs, a_l2, 0x40, &v40) &&
-            spmi_read_byte(spmi_obs, a_l2, 0x45, &v45) &&
-            spmi_read_byte(spmi_obs, a_l2, 0x46, &v46) &&
-            spmi_read_byte(spmi_obs, a_l2, 0x47, &v47)) {
-            xnu_kprint("SWEET PMIC: L2C apid=%u 40=0x%02x 45=0x%02x 46=0x%02x 47=0x%02x\n",
-                       (uint32_t)a_l2, (uint32_t)v40, (uint32_t)v45, (uint32_t)v46, (uint32_t)v47);
+        uint16_t a_l2 = find_apid(spmi_core, 0x241, 768);
+        uint16_t a_l9 = find_apid(spmi_core, 0x248, 768);
+        uint8_t v46 = 0;
+        if (a_l2 != 0xffff && spmi_read_byte(spmi_obs, a_l2, 0x46, &v46)) {
+            xnu_kprint("SWEET PMIC: L2C (0x241) APID=%u EN_CTL=0x%02x\n", (uint32_t)a_l2, (uint32_t)v46);
         } else {
-            xnu_kprint("SWEET PMIC: L2C apid=%u read failed\n", (uint32_t)a_l2);
+            xnu_kprint("SWEET PMIC: L2C (0x241) not found / read failed\n");
         }
-        if (a_l9 != 0xffff &&
-            spmi_read_byte(spmi_obs, a_l9, 0x40, &v40) &&
-            spmi_read_byte(spmi_obs, a_l9, 0x45, &v45) &&
-            spmi_read_byte(spmi_obs, a_l9, 0x46, &v46) &&
-            spmi_read_byte(spmi_obs, a_l9, 0x47, &v47)) {
-            xnu_kprint("SWEET PMIC: L9C apid=%u 40=0x%02x 45=0x%02x 46=0x%02x 47=0x%02x\n",
-                       (uint32_t)a_l9, (uint32_t)v40, (uint32_t)v45, (uint32_t)v46, (uint32_t)v47);
+        if (a_l9 != 0xffff && spmi_read_byte(spmi_obs, a_l9, 0x46, &v46)) {
+            xnu_kprint("SWEET PMIC: L9C (0x248) APID=%u EN_CTL=0x%02x\n", (uint32_t)a_l9, (uint32_t)v46);
         } else {
-            xnu_kprint("SWEET PMIC: L9C apid=%u read failed\n", (uint32_t)a_l9);
+            xnu_kprint("SWEET PMIC: L9C (0x248) not found / read failed\n");
         }
     }
 
-    // Adaptive probe: correct Goodix Berlin version registers are 0x1000C / 0x10014
+    // Goodix Berlin digital core wakeup sequence (from brl_power_on in goodix_core.ko)
+    gpio_set(ctx.tlmm, PIN_RST, 1);
+    delay(10, 1000000);
+
+    uint8_t spi_mode = 1;
+    goodix_write(&ctx, 0xc900, &spi_mode, 1);
+    delay(2, 1000000);
+
+    uint8_t b_ff = 0xff;
+    uint8_t b_77 = 0x77;
+    uint8_t b_3c = 0x3c;
+    uint8_t b_fa = 0xfa;
+    goodix_write(&ctx, 0xd807, &b_ff, 1);
+    goodix_write(&ctx, 0xd806, &b_77, 1);
+    goodix_write(&ctx, 0xd006, &b_3c, 1);
+    goodix_write(&ctx, 0xd808, &b_fa, 1);
+    delay(5, 1000000);
+
+    // Adaptive probe: test Goodix Berlin version registers 0x1000C / 0x10014 / 0x10068
     uint8_t version[32];
     bool probed = false;
-    uint8_t spi_mode = 1;
 
-    for (int attempt = 0; attempt < 2 && !probed; attempt++) {
-        if (attempt == 1) {
-            xnu_kprint("SWEET TOUCH: no response, pulsing reset for bootloader retry\n");
-            gpio_cfg(ctx.tlmm, PIN_RST, 0, 3, 8, true);
-            gpio_set(ctx.tlmm, PIN_RST, 0);
-            delay(2, 1000000);
-            gpio_set(ctx.tlmm, PIN_RST, 1);
-            delay(30, 1000000);
-        }
+    for (int pin_cfg = 0; pin_cfg < 2 && !probed; pin_cfg++) {
+        ctx.pin_mosi = (pin_cfg == 0) ? 16 : 17;
+        ctx.pin_miso = (pin_cfg == 0) ? 17 : 16;
+        gpio_cfg(ctx.tlmm, ctx.pin_mosi, 0, 0, 6, true);
+        gpio_cfg(ctx.tlmm, ctx.pin_miso, 0, 0, 6, false);
+        gpio_set(ctx.tlmm, ctx.pin_mosi, 0);
+        gpio_set(ctx.tlmm, PIN_CS, 1);
 
-        for (int pin_cfg = 0; pin_cfg < 2 && !probed; pin_cfg++) {
-            ctx.pin_mosi = (pin_cfg == 0) ? 16 : 17;
-            ctx.pin_miso = (pin_cfg == 0) ? 17 : 16;
-            gpio_cfg(ctx.tlmm, ctx.pin_mosi, 0, 0, 6, true);
-            gpio_cfg(ctx.tlmm, ctx.pin_miso, 0, 0, 6, false);
-            gpio_set(ctx.tlmm, ctx.pin_mosi, 0);
-            gpio_set(ctx.tlmm, PIN_CS, 1);
+        goodix_write(&ctx, 0xc900, &spi_mode, 1);
+        delay(2, 1000000);
 
-            // Send SPI mode select command
-            goodix_write(&ctx, 0xc900, &spi_mode, 1);
-            delay(5, 1000000);
-
-            for (int d = 3; d <= 4; d++) {
-                ctx.dummy_bytes = d;
-                uint32_t addrs[2] = {0x1000c, 0x10014};
-                for (int a = 0; a < 2 && !probed; a++) {
-                    uint32_t addr = addrs[a];
-                    for (int i = 0; i < 32; i++) version[i] = 0;
-                    if (goodix_read(&ctx, addr, version, 28)) {
-                        xnu_kprint("SWEET TOUCH: probe t%d mosi=%d miso=%d d=%d a=0x%05x -> %02x %02x %02x %02x\n",
-                                   attempt, ctx.pin_mosi, ctx.pin_miso, d, addr,
-                                   (uint32_t)version[0], (uint32_t)version[1], (uint32_t)version[2], (uint32_t)version[3]);
-                        if ((version[0] >= '0' && version[0] <= '9') ||
-                            (version[0] >= 'A' && version[0] <= 'Z') ||
-                            (version[0] >= 'a' && version[0] <= 'z')) {
-                            xnu_kprint("SWEET TOUCH: Goodix GT9916R found! IC=%.6s FW=%.8s (mosi=%d miso=%d dummy=%d)\n",
-                                       (const char *)version, (const char *)version + 10, ctx.pin_mosi, ctx.pin_miso, d);
-                            probed = true;
-                            break;
-                        }
+        for (int d = 3; d <= 4; d++) {
+            ctx.dummy_bytes = d;
+            uint32_t addrs[3] = {0x1000c, 0x10014, 0x10068};
+            for (int a = 0; a < 3 && !probed; a++) {
+                uint32_t addr = addrs[a];
+                for (int i = 0; i < 32; i++) version[i] = 0;
+                if (goodix_read(&ctx, addr, version, 28)) {
+                    xnu_kprint("SWEET TOUCH: probe mosi=%d miso=%d d=%d a=0x%05x\n",
+                               ctx.pin_mosi, ctx.pin_miso, d, addr);
+                    xnu_kprint("SWEET TOUCH: raw: %02x %02x %02x %02x\n",
+                               (uint32_t)version[0], (uint32_t)version[1],
+                               (uint32_t)version[2], (uint32_t)version[3]);
+                    if ((version[0] >= '0' && version[0] <= '9') ||
+                        (version[0] >= 'A' && version[0] <= 'Z') ||
+                        (version[0] >= 'a' && version[0] <= 'z')) {
+                        xnu_kprint("SWEET TOUCH: Goodix GT9916R found! IC=%.6s FW=%.8s\n",
+                                   (const char *)version, (const char *)version + 10);
+                        probed = true;
+                        break;
                     }
                 }
             }
