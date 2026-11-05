@@ -36,6 +36,7 @@ typedef void (*sweet_hid_key_fn)(int key, int down);
 #define TLMM_SIZE             0x20000ULL
 #define SPMI_CORE_PA          0x0c400000ULL
 #define SPMI_OBS_PA           0x0c440000ULL
+#define SPMI_CHNLS_PA         0x0c500000ULL
 
 #define PIN_MOSI_DEFAULT      16
 #define PIN_MISO_DEFAULT      17
@@ -145,7 +146,7 @@ static bool goodix_read(struct marble_touch_ctx *ctx, uint32_t address, uint8_t 
         spi_transfer_byte(ctx, tx[i], 0);
     }
     for (uint32_t i = 0; i < length; i++) {
-        spi_transfer_byte(ctx, 0x00, &data[i]);
+        spi_transfer_byte(ctx, 0xff, &data[i]);
     }
     for (volatile int d = 0; d < 2000; d++) __asm__ volatile("nop");
     gpio_set(ctx->tlmm, PIN_CS, 1);
@@ -204,6 +205,24 @@ static bool spmi_read_byte(volatile uint32_t *obs, uint16_t apid, uint16_t addr,
     return false;
 }
 
+static bool spmi_write_byte(volatile uint32_t *chnls, uint16_t apid, uint16_t addr, uint8_t val) {
+    if (apid == 0xffff || !chnls) return false;
+    uint32_t off = 0x1000 * apid;
+    uint32_t cmd = ((uint32_t)(addr & 0xff) << 4);
+    chnls[(off + 0x10) >> 2] = val;
+    __asm__ volatile("dmb oshst" ::: "memory");
+    chnls[off >> 2] = cmd;
+    __asm__ volatile("dsb osh" ::: "memory");
+    for (int i = 0; i < 400; i++) {
+        uint32_t st = rd(chnls, off + 0x08);
+        if (st & 1) {
+            return (st & 0x0e) == 0;
+        }
+        for (volatile int d = 0; d < 40; d++) __asm__ volatile("nop");
+    }
+    return false;
+}
+
 static inline uint16_t le16(const uint8_t *p) {
     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
 }
@@ -236,15 +255,46 @@ void marble_touch_entry(void) {
         delay(1000, 1000000);
     }
 
-    // Map SPMI for Physical Power & Volume Buttons
+    // Map SPMI for Physical Power & Volume Buttons and Regulator Control
     volatile uint32_t *spmi_core = (volatile uint32_t *)ml_io_map(SPMI_CORE_PA, 0x3000);
     volatile uint32_t *spmi_obs = (volatile uint32_t *)ml_io_map(SPMI_OBS_PA, 0x80000);
+    volatile uint32_t *spmi_chnls = (volatile uint32_t *)ml_io_map(SPMI_CHNLS_PA, 0x200000);
     uint16_t apid_pon = 0xffff;
     uint16_t apid_volup = 0xffff;
     if (spmi_core && spmi_obs) {
         apid_pon = find_apid(spmi_core, 0x008, 768);
         apid_volup = find_apid(spmi_core, 0x0c5, 768);
         xnu_kprint("SWEET KEYS: Physical buttons ready (PON APID=%u, VolUp APID=%u)\n", (uint32_t)apid_pon, (uint32_t)apid_volup);
+    }
+
+    // Power on PM8350C regulators: L9C (AVDD 2.8V, APID 152) and L2C (IOVDD 1.8V)
+    if (spmi_core && spmi_obs && spmi_chnls) {
+        uint16_t a_l9 = 152;
+        uint8_t before = 0, after = 0;
+        spmi_read_byte(spmi_obs, a_l9, 0x46, &before);
+        spmi_write_byte(spmi_chnls, a_l9, 0x46, 0x80);
+        delay(10, 1000000);
+        spmi_read_byte(spmi_obs, a_l9, 0x46, &after);
+        xnu_kprint("SWEET PMIC: L9C (0x248) APID=%u EN_CTL: 0x%02x -> 0x%02x\n",
+                   (uint32_t)a_l9, (uint32_t)before, (uint32_t)after);
+
+        // Scan slave 2 for any disabled LDOs and enable them
+        for (uint32_t i = 0; i < 768; i++) {
+            uint32_t map = rd(spmi_core, 0x2000 + 4 * i);
+            uint16_t ppid = (map >> 8) & 0xfff;
+            if ((ppid >> 8) == 2 && (ppid & 0xf0) == 0x40 && (ppid & 0x0f) <= 0x0e) {
+                uint8_t ctl = 0;
+                spmi_read_byte(spmi_obs, i, 0x46, &ctl);
+                if (!(ctl & 0x80)) {
+                    spmi_write_byte(spmi_chnls, i, 0x46, 0x80);
+                    uint8_t now = 0;
+                    spmi_read_byte(spmi_obs, i, 0x46, &now);
+                    xnu_kprint("SWEET PMIC: S2 LDO PPID=0x%03x APID=%u: 0x%02x -> 0x%02x\n",
+                               (uint32_t)ppid, i, (uint32_t)ctl, (uint32_t)now);
+                }
+            }
+        }
+        delay(20, 1000000); // 20ms for power rails to stabilize
     }
 
     // Map Cape TLMM for Goodix GT9916R SPI Touchscreen
@@ -255,123 +305,54 @@ void marble_touch_entry(void) {
         while (1) delay(1000, 1000000);
     }
 
-    // Hold GPIO 20 (Reset) HIGH to preserve firmware loaded by ABL
-    // Print raw ABL pin config first (before we touch anything)
-    xnu_kprint("SWEET TOUCH: raw ABL cfg: 16=0x%x 17=0x%x 18=0x%x 19=0x%x 20=0x%x 21=0x%x\n",
-               rd(ctx.tlmm, GPIO_CFG(16)), rd(ctx.tlmm, GPIO_CFG(17)),
-               rd(ctx.tlmm, GPIO_CFG(18)), rd(ctx.tlmm, GPIO_CFG(19)),
-               rd(ctx.tlmm, GPIO_CFG(20)), rd(ctx.tlmm, GPIO_CFG(21)));
-
+    // Hold GPIO 20 (Reset) HIGH continuously to preserve firmware
     gpio_cfg(ctx.tlmm, PIN_RST, 0, 3, 8, true);
     gpio_set(ctx.tlmm, PIN_RST, 1);
     delay(10, 1000000);
 
-    // Configure all SPI pins
-    gpio_cfg(ctx.tlmm, 16, 0, 0, 6, true);
-    gpio_cfg(ctx.tlmm, 17, 0, 0, 6, false);
+    // Configure SPI pins: CLK, CS, INT
     gpio_cfg(ctx.tlmm, PIN_CLK, 0, 0, 6, true);
     gpio_cfg(ctx.tlmm, PIN_CS, 0, 3, 6, true);
     gpio_cfg(ctx.tlmm, PIN_INT, 0, 3, 6, false);
     gpio_set(ctx.tlmm, PIN_CS, 1);
     gpio_set(ctx.tlmm, PIN_CLK, 0);
 
-    xnu_kprint("SWEET TOUCH: cfg: 16=0x%x 17=0x%x 18=0x%x 19=0x%x 20=0x%x 21=0x%x\n",
-               rd(ctx.tlmm, GPIO_CFG(16)), rd(ctx.tlmm, GPIO_CFG(17)),
-               rd(ctx.tlmm, GPIO_CFG(18)), rd(ctx.tlmm, GPIO_CFG(19)),
-               rd(ctx.tlmm, GPIO_CFG(20)), rd(ctx.tlmm, GPIO_CFG(21)));
-
-    gpio_set(ctx.tlmm, 16, 1);
-    for (volatile int d = 0; d < 500; d++) __asm__ volatile("nop");
-    uint32_t io_mo_hi = rd(ctx.tlmm, GPIO_IO(16));
-    gpio_set(ctx.tlmm, 16, 0);
-    for (volatile int d = 0; d < 500; d++) __asm__ volatile("nop");
-    uint32_t io_mo_lo = rd(ctx.tlmm, GPIO_IO(16));
-    gpio_set(ctx.tlmm, 18, 1);
-    for (volatile int d = 0; d < 500; d++) __asm__ volatile("nop");
-    uint32_t io_ck_hi = rd(ctx.tlmm, GPIO_IO(18));
-    gpio_set(ctx.tlmm, 18, 0);
-    for (volatile int d = 0; d < 500; d++) __asm__ volatile("nop");
-    uint32_t io_ck_lo = rd(ctx.tlmm, GPIO_IO(18));
-    gpio_set(ctx.tlmm, 19, 1);
-    for (volatile int d = 0; d < 500; d++) __asm__ volatile("nop");
-    uint32_t io_cs_hi = rd(ctx.tlmm, GPIO_IO(19));
-    gpio_set(ctx.tlmm, 19, 0);
-    for (volatile int d = 0; d < 500; d++) __asm__ volatile("nop");
-    uint32_t io_cs_lo = rd(ctx.tlmm, GPIO_IO(19));
-    gpio_set(ctx.tlmm, PIN_CS, 1);
-    xnu_kprint("SWEET TOUCH: io MOSI=(%d,%d) CLK=(%d,%d)\n",
-               (io_mo_hi & 1), (io_mo_lo & 1), (io_ck_hi & 1), (io_ck_lo & 1));
-    xnu_kprint("SWEET TOUCH: io CS=(%d,%d) INT=%d MISO=%d\n",
-               (io_cs_hi & 1), (io_cs_lo & 1),
-               gpio_get(ctx.tlmm, PIN_INT) ? 1 : 0, gpio_get(ctx.tlmm, 17) ? 1 : 0);
-
-    // PM8350C regulator check: L2C = IOVDD (PPID 0x241), L9C = AVDD (PPID 0x248)
-    if (spmi_core && spmi_obs) {
-        uint16_t a_l2 = find_apid(spmi_core, 0x241, 768);
-        uint16_t a_l9 = find_apid(spmi_core, 0x248, 768);
-        uint8_t v46 = 0;
-        if (a_l2 != 0xffff && spmi_read_byte(spmi_obs, a_l2, 0x46, &v46)) {
-            xnu_kprint("SWEET PMIC: L2C (0x241) APID=%u EN_CTL=0x%02x\n", (uint32_t)a_l2, (uint32_t)v46);
-        } else {
-            xnu_kprint("SWEET PMIC: L2C (0x241) not found / read failed\n");
-        }
-        if (a_l9 != 0xffff && spmi_read_byte(spmi_obs, a_l9, 0x46, &v46)) {
-            xnu_kprint("SWEET PMIC: L9C (0x248) APID=%u EN_CTL=0x%02x\n", (uint32_t)a_l9, (uint32_t)v46);
-        } else {
-            xnu_kprint("SWEET PMIC: L9C (0x248) not found / read failed\n");
-        }
-    }
-
-    // Goodix Berlin digital core wakeup sequence (from brl_power_on in goodix_core.ko)
-    gpio_set(ctx.tlmm, PIN_RST, 1);
-    delay(10, 1000000);
-
-    uint8_t spi_mode = 1;
-    goodix_write(&ctx, 0xc900, &spi_mode, 1);
-    delay(2, 1000000);
-
-    uint8_t b_ff = 0xff;
-    uint8_t b_77 = 0x77;
-    uint8_t b_3c = 0x3c;
-    uint8_t b_fa = 0xfa;
-    goodix_write(&ctx, 0xd807, &b_ff, 1);
-    goodix_write(&ctx, 0xd806, &b_77, 1);
-    goodix_write(&ctx, 0xd006, &b_3c, 1);
-    goodix_write(&ctx, 0xd808, &b_fa, 1);
-    delay(5, 1000000);
-
-    // Adaptive probe: test Goodix Berlin version registers 0x1000C / 0x10014 / 0x10068
+    // Adaptive probe: test both pin assignments and dummy-byte lengths
     uint8_t version[32];
     bool probed = false;
+    uint8_t spi_mode = 1;
 
     for (int pin_cfg = 0; pin_cfg < 2 && !probed; pin_cfg++) {
-        ctx.pin_mosi = (pin_cfg == 0) ? 16 : 17;
-        ctx.pin_miso = (pin_cfg == 0) ? 17 : 16;
+        if (pin_cfg == 0) {
+            ctx.pin_mosi = 16;
+            ctx.pin_miso = 17;
+        } else {
+            ctx.pin_mosi = 17;
+            ctx.pin_miso = 16;
+        }
         gpio_cfg(ctx.tlmm, ctx.pin_mosi, 0, 0, 6, true);
         gpio_cfg(ctx.tlmm, ctx.pin_miso, 0, 0, 6, false);
         gpio_set(ctx.tlmm, ctx.pin_mosi, 0);
-        gpio_set(ctx.tlmm, PIN_CS, 1);
 
+        // Send SPI mode select command
         goodix_write(&ctx, 0xc900, &spi_mode, 1);
-        delay(2, 1000000);
+        delay(5, 1000000);
 
         for (int d = 3; d <= 4; d++) {
             ctx.dummy_bytes = d;
-            uint32_t addrs[3] = {0x1000c, 0x10014, 0x10068};
+            uint32_t addrs[3] = {0x10068, 0x10014, 0x1000c};
             for (int a = 0; a < 3 && !probed; a++) {
                 uint32_t addr = addrs[a];
                 for (int i = 0; i < 32; i++) version[i] = 0;
                 if (goodix_read(&ctx, addr, version, 28)) {
-                    xnu_kprint("SWEET TOUCH: probe mosi=%d miso=%d d=%d a=0x%05x\n",
-                               ctx.pin_mosi, ctx.pin_miso, d, addr);
-                    xnu_kprint("SWEET TOUCH: raw: %02x %02x %02x %02x\n",
-                               (uint32_t)version[0], (uint32_t)version[1],
-                               (uint32_t)version[2], (uint32_t)version[3]);
+                    xnu_kprint("SWEET TOUCH: probe mosi=%d miso=%d d=%d a=0x%05x -> %02x %02x %02x %02x\n",
+                               ctx.pin_mosi, ctx.pin_miso, d, addr,
+                               (uint32_t)version[0], (uint32_t)version[1], (uint32_t)version[2], (uint32_t)version[3]);
                     if ((version[0] >= '0' && version[0] <= '9') ||
                         (version[0] >= 'A' && version[0] <= 'Z') ||
                         (version[0] >= 'a' && version[0] <= 'z')) {
-                        xnu_kprint("SWEET TOUCH: Goodix GT9916R found! IC=%.6s FW=%.8s\n",
-                                   (const char *)version, (const char *)version + 10);
+                        xnu_kprint("SWEET TOUCH: Goodix GT9916R found! IC=%.6s FW=%.8s (mosi=%d miso=%d dummy=%d)\n",
+                                   (const char *)version, (const char *)version + 10, ctx.pin_mosi, ctx.pin_miso, d);
                         probed = true;
                         break;
                     }
