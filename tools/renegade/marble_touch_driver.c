@@ -185,6 +185,16 @@ static uint16_t find_apid(volatile uint32_t *core, uint16_t ppid, uint32_t count
     return 0xffff;
 }
 
+static uint16_t find_apid_usid(volatile uint32_t *core, uint16_t usid, uint16_t pid, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t map = rd(core, 0x2000 + 4 * i);
+        if ((map & 0xff) == usid && ((map >> 8) & 0xfff) == pid) {
+            return (uint16_t)i;
+        }
+    }
+    return 0xffff;
+}
+
 static bool spmi_read_byte(volatile uint32_t *obs, uint16_t apid, uint16_t addr, uint8_t *out) {
     if (apid == 0xffff) return false;
     uint32_t off = 0x20 * apid;
@@ -256,77 +266,125 @@ void marble_touch_entry(void) {
     }
 
     // Hold GPIO 20 (Reset) HIGH to preserve firmware loaded by ABL
-    gpio_cfg(ctx.tlmm, PIN_RST, 0, 3, 8, true);
-    gpio_set(ctx.tlmm, PIN_RST, 1);
-    delay(10, 1000000);
-
-    // Configure SPI pins: CLK, CS, INT
-    xnu_kprint("SWEET TOUCH: ABL TLMM: 16=0x%x 17=0x%x 18=0x%x 19=0x%x 20=0x%x 21=0x%x\n",
+    // Print raw ABL pin config first (before we touch anything)
+    xnu_kprint("SWEET TOUCH: raw ABL cfg: 16=0x%x 17=0x%x 18=0x%x 19=0x%x 20=0x%x 21=0x%x\n",
                rd(ctx.tlmm, GPIO_CFG(16)), rd(ctx.tlmm, GPIO_CFG(17)),
                rd(ctx.tlmm, GPIO_CFG(18)), rd(ctx.tlmm, GPIO_CFG(19)),
                rd(ctx.tlmm, GPIO_CFG(20)), rd(ctx.tlmm, GPIO_CFG(21)));
 
+    gpio_cfg(ctx.tlmm, PIN_RST, 0, 3, 8, true);
+    gpio_set(ctx.tlmm, PIN_RST, 1);
+    delay(10, 1000000);
+
+    // Configure all SPI pins
+    gpio_cfg(ctx.tlmm, 16, 0, 0, 6, true);
+    gpio_cfg(ctx.tlmm, 17, 0, 0, 6, false);
     gpio_cfg(ctx.tlmm, PIN_CLK, 0, 0, 6, true);
     gpio_cfg(ctx.tlmm, PIN_CS, 0, 3, 6, true);
     gpio_cfg(ctx.tlmm, PIN_INT, 0, 3, 6, false);
     gpio_set(ctx.tlmm, PIN_CS, 1);
     gpio_set(ctx.tlmm, PIN_CLK, 0);
 
-    gpio_set(ctx.tlmm, 16, 1);
-    bool m16_hi = gpio_get(ctx.tlmm, 16);
-    gpio_set(ctx.tlmm, 16, 0);
-    bool m16_lo = gpio_get(ctx.tlmm, 16);
-    gpio_set(ctx.tlmm, 18, 1);
-    bool c18_hi = gpio_get(ctx.tlmm, 18);
-    gpio_set(ctx.tlmm, 18, 0);
-    bool c18_lo = gpio_get(ctx.tlmm, 18);
-    gpio_set(ctx.tlmm, 19, 1);
-    bool cs_hi = gpio_get(ctx.tlmm, 19);
-    gpio_set(ctx.tlmm, 19, 0);
-    bool cs_lo = gpio_get(ctx.tlmm, 19);
-    xnu_kprint("SWEET TOUCH: pin test: 16=(%d,%d) 18=(%d,%d) 19=(%d,%d) INT=%d\n",
-               m16_hi?1:0, m16_lo?1:0, c18_hi?1:0, c18_lo?1:0, cs_hi?1:0, cs_lo?1:0,
-               gpio_get(ctx.tlmm, PIN_INT) ? 1 : 0);
+    xnu_kprint("SWEET TOUCH: cfg: 16=0x%x 17=0x%x 18=0x%x 19=0x%x 20=0x%x 21=0x%x\n",
+               rd(ctx.tlmm, GPIO_CFG(16)), rd(ctx.tlmm, GPIO_CFG(17)),
+               rd(ctx.tlmm, GPIO_CFG(18)), rd(ctx.tlmm, GPIO_CFG(19)),
+               rd(ctx.tlmm, GPIO_CFG(20)), rd(ctx.tlmm, GPIO_CFG(21)));
 
-    // Adaptive probe: test both pin assignments (16=MOSI/17=MISO or 17=MOSI/16=MISO)
-    // and both dummy-byte lengths (3 and 4 bytes)
+    gpio_set(ctx.tlmm, 16, 1);
+    for (volatile int d = 0; d < 500; d++) __asm__ volatile("nop");
+    uint32_t io_mo_hi = rd(ctx.tlmm, GPIO_IO(16));
+    gpio_set(ctx.tlmm, 16, 0);
+    for (volatile int d = 0; d < 500; d++) __asm__ volatile("nop");
+    uint32_t io_mo_lo = rd(ctx.tlmm, GPIO_IO(16));
+    gpio_set(ctx.tlmm, 18, 1);
+    for (volatile int d = 0; d < 500; d++) __asm__ volatile("nop");
+    uint32_t io_ck_hi = rd(ctx.tlmm, GPIO_IO(18));
+    gpio_set(ctx.tlmm, 18, 0);
+    for (volatile int d = 0; d < 500; d++) __asm__ volatile("nop");
+    uint32_t io_ck_lo = rd(ctx.tlmm, GPIO_IO(18));
+    gpio_set(ctx.tlmm, 19, 1);
+    for (volatile int d = 0; d < 500; d++) __asm__ volatile("nop");
+    uint32_t io_cs_hi = rd(ctx.tlmm, GPIO_IO(19));
+    gpio_set(ctx.tlmm, 19, 0);
+    for (volatile int d = 0; d < 500; d++) __asm__ volatile("nop");
+    uint32_t io_cs_lo = rd(ctx.tlmm, GPIO_IO(19));
+    gpio_set(ctx.tlmm, PIN_CS, 1);
+    xnu_kprint("SWEET TOUCH: io MOSI=(0x%x,0x%x) CLK=(0x%x,0x%x) CS=(0x%x,0x%x) INT=%d MISO=%d\n",
+               io_mo_hi, io_mo_lo, io_ck_hi, io_ck_lo, io_cs_hi, io_cs_lo,
+               gpio_get(ctx.tlmm, PIN_INT) ? 1 : 0, gpio_get(ctx.tlmm, 17) ? 1 : 0);
+
+    // PM8350C regulator check: L2C = IOVDD (PID 0x41), L9C = AVDD (PID 0x48), USID 2
+    if (spmi_core && spmi_obs) {
+        uint16_t a_l2 = find_apid_usid(spmi_core, 2, 0x41, 768);
+        uint16_t a_l9 = find_apid_usid(spmi_core, 2, 0x48, 768);
+        uint8_t v40, v45, v46, v47;
+        if (a_l2 != 0xffff &&
+            spmi_read_byte(spmi_obs, a_l2, 0x40, &v40) &&
+            spmi_read_byte(spmi_obs, a_l2, 0x45, &v45) &&
+            spmi_read_byte(spmi_obs, a_l2, 0x46, &v46) &&
+            spmi_read_byte(spmi_obs, a_l2, 0x47, &v47)) {
+            xnu_kprint("SWEET PMIC: L2C apid=%u 40=0x%02x 45=0x%02x 46=0x%02x 47=0x%02x\n",
+                       (uint32_t)a_l2, (uint32_t)v40, (uint32_t)v45, (uint32_t)v46, (uint32_t)v47);
+        } else {
+            xnu_kprint("SWEET PMIC: L2C apid=%u read failed\n", (uint32_t)a_l2);
+        }
+        if (a_l9 != 0xffff &&
+            spmi_read_byte(spmi_obs, a_l9, 0x40, &v40) &&
+            spmi_read_byte(spmi_obs, a_l9, 0x45, &v45) &&
+            spmi_read_byte(spmi_obs, a_l9, 0x46, &v46) &&
+            spmi_read_byte(spmi_obs, a_l9, 0x47, &v47)) {
+            xnu_kprint("SWEET PMIC: L9C apid=%u 40=0x%02x 45=0x%02x 46=0x%02x 47=0x%02x\n",
+                       (uint32_t)a_l9, (uint32_t)v40, (uint32_t)v45, (uint32_t)v46, (uint32_t)v47);
+        } else {
+            xnu_kprint("SWEET PMIC: L9C apid=%u read failed\n", (uint32_t)a_l9);
+        }
+    }
+
+    // Adaptive probe: correct Goodix Berlin version registers are 0x1000C / 0x10014
     uint8_t version[32];
     bool probed = false;
     uint8_t spi_mode = 1;
 
-    for (int pin_cfg = 0; pin_cfg < 2 && !probed; pin_cfg++) {
-        if (pin_cfg == 0) {
-            ctx.pin_mosi = 16;
-            ctx.pin_miso = 17;
-        } else {
-            ctx.pin_mosi = 17;
-            ctx.pin_miso = 16;
+    for (int attempt = 0; attempt < 2 && !probed; attempt++) {
+        if (attempt == 1) {
+            xnu_kprint("SWEET TOUCH: no response, pulsing reset for bootloader retry\n");
+            gpio_cfg(ctx.tlmm, PIN_RST, 0, 3, 8, true);
+            gpio_set(ctx.tlmm, PIN_RST, 0);
+            delay(2, 1000000);
+            gpio_set(ctx.tlmm, PIN_RST, 1);
+            delay(30, 1000000);
         }
-        gpio_cfg(ctx.tlmm, ctx.pin_mosi, 0, 0, 6, true);
-        gpio_cfg(ctx.tlmm, ctx.pin_miso, 0, 0, 6, false);
-        gpio_set(ctx.tlmm, ctx.pin_mosi, 0);
 
-        // Send SPI mode select command
-        goodix_write(&ctx, 0xc900, &spi_mode, 1);
-        delay(5, 1000000);
+        for (int pin_cfg = 0; pin_cfg < 2 && !probed; pin_cfg++) {
+            ctx.pin_mosi = (pin_cfg == 0) ? 16 : 17;
+            ctx.pin_miso = (pin_cfg == 0) ? 17 : 16;
+            gpio_cfg(ctx.tlmm, ctx.pin_mosi, 0, 0, 6, true);
+            gpio_cfg(ctx.tlmm, ctx.pin_miso, 0, 0, 6, false);
+            gpio_set(ctx.tlmm, ctx.pin_mosi, 0);
+            gpio_set(ctx.tlmm, PIN_CS, 1);
 
-        for (int d = 3; d <= 4; d++) {
-            ctx.dummy_bytes = d;
-            uint32_t addrs[2] = {0x10068, 0x10014};
-            for (int a = 0; a < 2 && !probed; a++) {
-                uint32_t addr = addrs[a];
-                for (int i = 0; i < 32; i++) version[i] = 0;
-                if (goodix_read(&ctx, addr, version, 28)) {
-                    xnu_kprint("SWEET TOUCH: probe mosi=%d miso=%d d=%d a=0x%05x -> %02x %02x %02x %02x\n",
-                               ctx.pin_mosi, ctx.pin_miso, d, addr,
-                               (uint32_t)version[0], (uint32_t)version[1], (uint32_t)version[2], (uint32_t)version[3]);
-                    if ((version[0] >= '0' && version[0] <= '9') ||
-                        (version[0] >= 'A' && version[0] <= 'Z') ||
-                        (version[0] >= 'a' && version[0] <= 'z')) {
-                        xnu_kprint("SWEET TOUCH: Goodix GT9916R found! IC=%.6s FW=%.8s (mosi=%d miso=%d dummy=%d)\n",
-                                   (const char *)version, (const char *)version + 10, ctx.pin_mosi, ctx.pin_miso, d);
-                        probed = true;
-                        break;
+            // Send SPI mode select command
+            goodix_write(&ctx, 0xc900, &spi_mode, 1);
+            delay(5, 1000000);
+
+            for (int d = 3; d <= 4; d++) {
+                ctx.dummy_bytes = d;
+                uint32_t addrs[2] = {0x1000c, 0x10014};
+                for (int a = 0; a < 2 && !probed; a++) {
+                    uint32_t addr = addrs[a];
+                    for (int i = 0; i < 32; i++) version[i] = 0;
+                    if (goodix_read(&ctx, addr, version, 28)) {
+                        xnu_kprint("SWEET TOUCH: probe t%d mosi=%d miso=%d d=%d a=0x%05x -> %02x %02x %02x %02x\n",
+                                   attempt, ctx.pin_mosi, ctx.pin_miso, d, addr,
+                                   (uint32_t)version[0], (uint32_t)version[1], (uint32_t)version[2], (uint32_t)version[3]);
+                        if ((version[0] >= '0' && version[0] <= '9') ||
+                            (version[0] >= 'A' && version[0] <= 'Z') ||
+                            (version[0] >= 'a' && version[0] <= 'z')) {
+                            xnu_kprint("SWEET TOUCH: Goodix GT9916R found! IC=%.6s FW=%.8s (mosi=%d miso=%d dummy=%d)\n",
+                                       (const char *)version, (const char *)version + 10, ctx.pin_mosi, ctx.pin_miso, d);
+                            probed = true;
+                            break;
+                        }
                     }
                 }
             }
