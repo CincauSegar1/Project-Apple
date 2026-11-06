@@ -44,7 +44,7 @@ typedef void (*sweet_hid_key_fn)(int key, int down);
 #define PIN_RST               20
 #define PIN_INT               21
 
-#define GOODIX_STATUS_TOUCH   0x80
+#define GOODIX_STATUS_TOUCH   0x60
 
 /*
  * XNU uses Darwin ARM64 ABI where variadic arguments are read from the caller's stack frame.
@@ -183,7 +183,7 @@ static bool goodix_read(struct marble_touch_ctx *ctx, uint32_t address, uint8_t 
         spi_transfer_byte(ctx, tx[i], 0);
     }
     for (uint32_t i = 0; i < length; i++) {
-        spi_transfer_byte(ctx, 0x00, &data[i]);
+        spi_transfer_byte(ctx, 0xff, &data[i]);
     }
     for (volatile int d = 0; d < 2000; d++) __asm__ volatile("nop");
     gpio_set(ctx->tlmm, PIN_CS, 1);
@@ -294,22 +294,32 @@ void marble_touch_entry(void) {
         while (1) delay(1000, 1000000);
     }
 
-    // Hold GPIO 20 (Reset) HIGH to preserve firmware loaded by ABL
-    gpio_cfg(ctx.tlmm, PIN_RST, 0, 3, 8, true);
-    gpio_set(ctx.tlmm, PIN_RST, 1);
-    delay(10, 1000000);
-
-    // Configure SPI pins: CLK, CS, INT
+    // Print raw ABL configuration
     xnu_kprint("SWEET TOUCH: ABL TLMM: 16=0x%x 17=0x%x 18=0x%x 19=0x%x 20=0x%x 21=0x%x\n",
                rd(ctx.tlmm, GPIO_CFG(16)), rd(ctx.tlmm, GPIO_CFG(17)),
                rd(ctx.tlmm, GPIO_CFG(18)), rd(ctx.tlmm, GPIO_CFG(19)),
                rd(ctx.tlmm, GPIO_CFG(20)), rd(ctx.tlmm, GPIO_CFG(21)));
 
+    // Hardware Reset & Wake for Goodix GT9916R:
+    // Pulse Reset LOW for 10ms, then set HIGH and wait 120ms for internal ROM/firmware to boot
+    gpio_cfg(ctx.tlmm, PIN_RST, 0, 3, 8, true);
+    gpio_cfg(ctx.tlmm, PIN_CS,  0, 3, 6, true);
+    gpio_cfg(ctx.tlmm, PIN_INT, 0, 3, 6, false);
+    gpio_set(ctx.tlmm, PIN_CS, 1);
+    gpio_set(ctx.tlmm, PIN_RST, 0);
+    delay(10, 1000000);
+    gpio_set(ctx.tlmm, PIN_RST, 1);
+    delay(120, 1000000);
+
+    // Configure SPI pins: CLK, CS, MOSI (drive 6), MISO (pull-up), INT (pull-up)
     gpio_cfg(ctx.tlmm, PIN_CLK, 0, 0, 6, true);
-    gpio_cfg(ctx.tlmm, PIN_CS, 0, 3, 6, true);
+    gpio_cfg(ctx.tlmm, PIN_CS,  0, 3, 6, true);
+    gpio_cfg(ctx.tlmm, 16,      0, 0, 6, true);
+    gpio_cfg(ctx.tlmm, 17,      0, 3, 6, false);
     gpio_cfg(ctx.tlmm, PIN_INT, 0, 3, 6, false);
     gpio_set(ctx.tlmm, PIN_CS, 1);
     gpio_set(ctx.tlmm, PIN_CLK, 0);
+    gpio_set(ctx.tlmm, 16, 0);
 
     gpio_set(ctx.tlmm, 16, 1);
     bool m16_hi = gpio_get(ctx.tlmm, 16);
@@ -323,12 +333,13 @@ void marble_touch_entry(void) {
     bool cs_hi = gpio_get(ctx.tlmm, 19);
     gpio_set(ctx.tlmm, 19, 0);
     bool cs_lo = gpio_get(ctx.tlmm, 19);
-    xnu_kprint("SWEET TOUCH: pin test: 16=(%d,%d) 18=(%d,%d) 19=(%d,%d) INT=%d\n",
+    gpio_set(ctx.tlmm, PIN_CS, 1);
+    xnu_kprint("SWEET TOUCH: pin test: 16=(%d,%d) 18=(%d,%d) 19=(%d,%d) INT=%d MISO=%d\n",
                m16_hi?1:0, m16_lo?1:0, c18_hi?1:0, c18_lo?1:0, cs_hi?1:0, cs_lo?1:0,
-               gpio_get(ctx.tlmm, PIN_INT) ? 1 : 0);
+               gpio_get(ctx.tlmm, PIN_INT) ? 1 : 0, gpio_get(ctx.tlmm, 17) ? 1 : 0);
 
     // Adaptive probe: test both pin assignments (16=MOSI/17=MISO or 17=MOSI/16=MISO)
-    // and both dummy-byte lengths (3 and 4 bytes)
+    // and dummy-byte lengths (3 and 4 bytes)
     uint8_t version[32];
     bool probed = false;
     uint8_t spi_mode = 1;
@@ -342,8 +353,9 @@ void marble_touch_entry(void) {
             ctx.pin_miso = 16;
         }
         gpio_cfg(ctx.tlmm, ctx.pin_mosi, 0, 0, 6, true);
-        gpio_cfg(ctx.tlmm, ctx.pin_miso, 0, 0, 6, false);
+        gpio_cfg(ctx.tlmm, ctx.pin_miso, 0, 3, 6, false); // MISO input with pull-up
         gpio_set(ctx.tlmm, ctx.pin_mosi, 0);
+        gpio_set(ctx.tlmm, PIN_CS, 1);
 
         // Send SPI mode select command
         goodix_write(&ctx, 0xc900, &spi_mode, 1);
@@ -351,8 +363,8 @@ void marble_touch_entry(void) {
 
         for (int d = 3; d <= 4; d++) {
             ctx.dummy_bytes = d;
-            uint32_t addrs[2] = {0x10068, 0x10014};
-            for (int a = 0; a < 2 && !probed; a++) {
+            uint32_t addrs[3] = {0x10014, 0x10068, 0x13400};
+            for (int a = 0; a < 3 && !probed; a++) {
                 uint32_t addr = addrs[a];
                 for (int i = 0; i < 32; i++) version[i] = 0;
                 if (goodix_read(&ctx, addr, version, 28)) {
@@ -373,16 +385,16 @@ void marble_touch_entry(void) {
     }
 
     if (!probed) {
-        xnu_kprint("SWEET TOUCH: fallback to default pinout (mosi=16 miso=17 dummy=4)\n");
+        xnu_kprint("SWEET TOUCH: fallback to default pinout (mosi=16 miso=17 dummy=3 addr=0x13400)\n");
         ctx.pin_mosi = 16;
         ctx.pin_miso = 17;
-        ctx.dummy_bytes = 4;
+        ctx.dummy_bytes = 3;
         gpio_cfg(ctx.tlmm, 16, 0, 0, 6, true);
-        gpio_cfg(ctx.tlmm, 17, 0, 0, 6, false);
+        gpio_cfg(ctx.tlmm, 17, 0, 3, 6, false);
         goodix_write(&ctx, 0xc900, &spi_mode, 1);
     }
 
-    uint32_t touch_address = 0x10200;
+    uint32_t touch_address = 0x13400; // Goodix Berlin D event address from params_brd
     uint32_t cfg_addr = (ctx.dummy_bytes == 4) ? 0x10068 : 0x10070;
     uint8_t info_hdr[2];
     if (goodix_read(&ctx, cfg_addr, info_hdr, 2)) {
@@ -404,7 +416,7 @@ void marble_touch_entry(void) {
         }
     }
     if (touch_address == 0 || touch_address < 0x10000 || touch_address > 0x80000) {
-        touch_address = 0x10200;
+        touch_address = 0x13400;
     }
     xnu_kprint("SWEET TOUCH: report address 0x%05x\n", touch_address);
 
@@ -486,8 +498,9 @@ void marble_touch_entry(void) {
                        (uint32_t)report[0], (uint32_t)report[1], (uint32_t)report[2], (uint32_t)report[3],
                        (uint32_t)report[4], (uint32_t)report[5], (uint32_t)report[6], (uint32_t)report[7]);
         }
-        if (status == 0 || status == 0xff || !(status & GOODIX_STATUS_TOUCH)) {
-            if (status & GOODIX_STATUS_TOUCH) {
+        bool has_touch = ((status & 0x60) != 0) || ((status & 0x80) != 0);
+        if (status == 0 || status == 0xff || !has_touch) {
+            if (has_touch) {
                 goodix_write(&ctx, touch_address, &zero, 1);
             }
             for (int i = 0; i < 10; i++) {
