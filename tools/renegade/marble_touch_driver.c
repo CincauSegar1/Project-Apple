@@ -183,7 +183,7 @@ static bool goodix_read(struct marble_touch_ctx *ctx, uint32_t address, uint8_t 
         spi_transfer_byte(ctx, tx[i], 0);
     }
     for (uint32_t i = 0; i < length; i++) {
-        spi_transfer_byte(ctx, 0xff, &data[i]);
+        spi_transfer_byte(ctx, 0x00, &data[i]);
     }
     for (volatile int d = 0; d < 2000; d++) __asm__ volatile("nop");
     gpio_set(ctx->tlmm, PIN_CS, 1);
@@ -301,21 +301,19 @@ void marble_touch_entry(void) {
                rd(ctx.tlmm, GPIO_CFG(20)), rd(ctx.tlmm, GPIO_CFG(21)));
 
     // Hardware Reset & Wake for Goodix GT9916R:
-    // Pulse Reset LOW for 10ms, then set HIGH and wait 120ms for internal ROM/firmware to boot
+    // ABL leaves firmware loaded; keep Reset HIGH to prevent chip returning to unconfigured ROM state.
     gpio_cfg(ctx.tlmm, PIN_RST, 0, 3, 8, true);
     gpio_cfg(ctx.tlmm, PIN_CS,  0, 3, 6, true);
     gpio_cfg(ctx.tlmm, PIN_INT, 0, 3, 6, false);
     gpio_set(ctx.tlmm, PIN_CS, 1);
-    gpio_set(ctx.tlmm, PIN_RST, 0);
-    delay(10, 1000000);
     gpio_set(ctx.tlmm, PIN_RST, 1);
-    delay(120, 1000000);
+    delay(10, 1000000);
 
-    // Configure SPI pins: CLK, CS, MOSI (drive 6), MISO (pull-up), INT (pull-up)
+    // Configure SPI pins: CLK, CS, MOSI (drive 6), MISO (no-pull), INT (pull-up)
     gpio_cfg(ctx.tlmm, PIN_CLK, 0, 0, 6, true);
     gpio_cfg(ctx.tlmm, PIN_CS,  0, 3, 6, true);
     gpio_cfg(ctx.tlmm, 16,      0, 0, 6, true);
-    gpio_cfg(ctx.tlmm, 17,      0, 3, 6, false);
+    gpio_cfg(ctx.tlmm, 17,      0, 0, 6, false);
     gpio_cfg(ctx.tlmm, PIN_INT, 0, 3, 6, false);
     gpio_set(ctx.tlmm, PIN_CS, 1);
     gpio_set(ctx.tlmm, PIN_CLK, 0);
@@ -334,9 +332,9 @@ void marble_touch_entry(void) {
     gpio_set(ctx.tlmm, 19, 0);
     bool cs_lo = gpio_get(ctx.tlmm, 19);
     gpio_set(ctx.tlmm, PIN_CS, 1);
-    xnu_kprint("SWEET TOUCH: pin test: 16=(%d,%d) 18=(%d,%d) 19=(%d,%d) INT=%d MISO=%d\n",
+    xnu_kprint("SWEET TOUCH: pin test: 16=(%d,%d) 18=(%d,%d) 19=(%d,%d) INT=%d\n",
                m16_hi?1:0, m16_lo?1:0, c18_hi?1:0, c18_lo?1:0, cs_hi?1:0, cs_lo?1:0,
-               gpio_get(ctx.tlmm, PIN_INT) ? 1 : 0, gpio_get(ctx.tlmm, 17) ? 1 : 0);
+               gpio_get(ctx.tlmm, PIN_INT) ? 1 : 0);
 
     // Adaptive probe: test both pin assignments (16=MOSI/17=MISO or 17=MOSI/16=MISO)
     // and dummy-byte lengths (3 and 4 bytes)
@@ -353,7 +351,7 @@ void marble_touch_entry(void) {
             ctx.pin_miso = 16;
         }
         gpio_cfg(ctx.tlmm, ctx.pin_mosi, 0, 0, 6, true);
-        gpio_cfg(ctx.tlmm, ctx.pin_miso, 0, 3, 6, false); // MISO input with pull-up
+        gpio_cfg(ctx.tlmm, ctx.pin_miso, 0, 0, 6, false); // MISO input bias-disable
         gpio_set(ctx.tlmm, ctx.pin_mosi, 0);
         gpio_set(ctx.tlmm, PIN_CS, 1);
 
@@ -385,12 +383,12 @@ void marble_touch_entry(void) {
     }
 
     if (!probed) {
-        xnu_kprint("SWEET TOUCH: fallback to default pinout (mosi=16 miso=17 dummy=3 addr=0x13400)\n");
+        xnu_kprint("SWEET TOUCH: fallback to default pinout (mosi=16 miso=17 dummy=4 addr=0x10200)\n");
         ctx.pin_mosi = 16;
         ctx.pin_miso = 17;
-        ctx.dummy_bytes = 3;
+        ctx.dummy_bytes = 4;
         gpio_cfg(ctx.tlmm, 16, 0, 0, 6, true);
-        gpio_cfg(ctx.tlmm, 17, 0, 3, 6, false);
+        gpio_cfg(ctx.tlmm, 17, 0, 0, 6, false);
         goodix_write(&ctx, 0xc900, &spi_mode, 1);
     }
 
