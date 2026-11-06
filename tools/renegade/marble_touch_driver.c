@@ -76,6 +76,44 @@ struct marble_touch_ctx {
     int dummy_bytes;
 };
 
+/* Renderer-injection diagnostics: does the iOS root still carry the bgl/bgmtl payload
+ * and the live-test state files that bgl-launch needs? */
+#define VNODE_LOOKUP_ADDR        0xfffffe00075c7e28ULL
+#define VNODE_PUT_ADDR           0xfffffe00075c5b88ULL
+#define VFS_CONTEXT_CURRENT_ADDR 0xfffffe00075f5458ULL
+
+typedef int (*vnode_lookup_fn)(const char *path, int flags, void **vpp, void *ctx);
+typedef int (*vnode_put_fn)(void *vp);
+typedef void *(*vfs_context_current_fn)(void);
+
+static bool path_exists(const char *path) {
+    vnode_lookup_fn lookup = (vnode_lookup_fn)VNODE_LOOKUP_ADDR;
+    vnode_put_fn put = (vnode_put_fn)VNODE_PUT_ADDR;
+    vfs_context_current_fn ctx = (vfs_context_current_fn)VFS_CONTEXT_CURRENT_ADDR;
+    void *vp = 0;
+    if (lookup(path, 0, &vp, ctx()) == 0 && vp) {
+        put(vp);
+        return true;
+    }
+    return false;
+}
+
+static void probe_bgl_files(void) {
+    xnu_kprint("SWEET BGL: launcher=%d gles=%d osmesa=%d drm=%d bgmtl=%d bbreal=%d\n",
+               (uint32_t)path_exists("/usr/local/lib/bergamota-gl/bgl-launch"),
+               (uint32_t)path_exists("/usr/local/lib/bergamota-gl/OpenGLES.framework/OpenGLES"),
+               (uint32_t)path_exists("/usr/local/lib/bergamota-gl/libOSMesa.8.dylib"),
+               (uint32_t)path_exists("/usr/local/lib/bergamota-gl/libdrm.2.dylib"),
+               (uint32_t)path_exists("/usr/local/lib/bgmtl/bgmtl-inject.dylib"),
+               (uint32_t)path_exists("/usr/libexec/backboardd.real"));
+    xnu_kprint("SWEET BGL: arm=%d off=%d marker=%d state=%d log=%d\n",
+               (uint32_t)path_exists("/private/var/tmp/bgmtl-bb.arm"),
+               (uint32_t)path_exists("/private/var/tmp/bgmtl-bb.off"),
+               (uint32_t)path_exists("/private/var/run/bglrender"),
+               (uint32_t)path_exists("/private/var/tmp/bgl-render.state"),
+               (uint32_t)path_exists("/private/var/tmp/bgl-backboardd.log"));
+}
+
 static inline void wr(volatile uint32_t *tlmm, uint32_t reg, uint32_t val) {
     tlmm[reg >> 2] = val;
     __asm__ volatile("dmb oshst" ::: "memory");
@@ -235,6 +273,7 @@ void marble_touch_entry(void) {
     for (int s = 0; s < 2; s++) {
         delay(1000, 1000000);
     }
+    probe_bgl_files();
 
     // Map SPMI for Physical Power & Volume Buttons
     volatile uint32_t *spmi_core = (volatile uint32_t *)ml_io_map(SPMI_CORE_PA, 0x3000);
@@ -393,6 +432,9 @@ void marble_touch_entry(void) {
         delay(8, 1000000); // 8ms sleep = 125 Hz
         idle_ticks++;
         key_ticks++;
+        if (idle_ticks == 2500) { // ~20 s after the first probe: backboardd has started by now
+            probe_bgl_files();
+        }
 
         // Physical Buttons Polling (every 64ms = 8 ticks)
         if (spmi_obs && spmi_err_count < 5 && key_ticks >= 8) {
